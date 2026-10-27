@@ -34,7 +34,7 @@ Text stack (45 layers, hidden 4096, vocab 154,880, `max_position_embeddings` **1
 - **Hybrid attention**: 34 linear-attention layers (KDA/GatedDeltaNet-style: `num_heads 64`, `head_dim 128`, `short_conv_kernel_size 4`, gated with `gate_lower_bound −5`) interleaved with **11 sparse-attention layers** (DeepSeek-style DSA with lightning indexer: `index_n_heads 32`, `index_head_dim 128`, `index_topk 2048`; every 4th layer: 3,7,…,43).
 - **MLA-style compressed KV**: `kv_lora_rank 512`, `q_lora_rank 1536`, `qk_nope_head_dim 256`, `qk_rope_head_dim 0`, `v_head_dim 256` (NoPE — no rope component).
 - **MoE**: 288 routed experts + 1 shared, **8 experts/token**, `moe_intermediate_size 2048`, sigmoid/noaux-tc routing, first 3 layers dense (`intermediate_size 12288`).
-- **MTP**: 1 nextn predict layer (speculative decoding support in vLLM/SGLang; not in llama.cpp mainline — see §4).
+- **MTP**: 1 nextn predict layer. Mainline llama.cpp v0.7.0 release notes include GLM5-Next MTP via [#29928](https://github.com/ggml-org/llama.cpp/pull/29928); local CPU benefit is unmeasured. The initial claim that MTP was absent from mainline was incorrect.
 - **mHC** (`hc_mult 4`): heterogeneous-horizon hyper-connections.
 - Vision tower: 24-layer encoder, 448-px inputs — native image/video input (`image-text-to-text` pipeline tag).
 
@@ -91,7 +91,7 @@ Every published configuration therefore exceeds this machine's 60.68 GiB of usab
 
 | Runtime | GLM-5.3-Flash support | Evidence (primary) | Runs on this machine? |
 |---|---|---|---|
-| **llama.cpp (mainline)** | **Supported**: arch `glm5-next` present in `src/llama-arch.cpp` on master; PR [#27773](https://github.com/ggml-org/llama.cpp/pull/27773) "add GLM-5.3-Flash (GLM5-Next) support" **merged 2026-09-30** (merge commit `649dcb1036fd47d01a83b56c5e35913e65c277ba`, "generates coherently and correctly, vision working"); shipped in release `b11279` (2026-09-30) and `v0.7.0` (2026-10-15, latest). Superseded/closed unmerged: #27752, #27754 (the "two flags required" caveat lived there and is obsolete). | GitHub API pull/commit/release records; master source fetch | **Plausible, unmeasured.** CPU build is a documented path (`-DGGML_CUDA=OFF`). Known-open upstream issues are GPU-specific: MTP not merged (#27917), Metal indexer stalls (#29867), Vulkan mmproj+MTP (#30204), Turing/Blackwell CUDA VRAM (#29950). No open CPU-correctness issue found, but no 64 GiB/4-core configuration is documented by anyone. |
+| **llama.cpp (mainline)** | **Supported**: `glm5-next` support merged in [#27773](https://github.com/ggml-org/llama.cpp/pull/27773), commit `649dcb1036fd47d01a83b56c5e35913e65c277ba`. The [v0.7.0 release](https://github.com/ggml-org/llama.cpp/releases/tag/v0.7.0), commit `620d2225cc436ab0b001e3200e590e3b286ef9ab`, also includes GLM5-Next MTP via #29928. Its linked nightly `b11669` provides an Ubuntu x64 CPU binary. | Primary release metadata and the downloaded CPU binary's SHA256/version output; see follow-up below | **Binary startup verified; model execution unmeasured.** CPU build is also documented (`-DGGML_CUDA=OFF`). No working 64 GiB/4-core model configuration has been established by this investigation. |
 | llama.cpp (Unsloth fork) | Supported, with MTP ("3.3× decode") | branch `glm5next/upstream`, `unslothai/llama.cpp#61`; unsloth guide build instructions | Same hardware caveat as above |
 | **vLLM** | Supported, **GPU-only**: vLLM ≥ 0.29.0, single-node TP=8 on H100/H200/B200/GB200/GB300, AMD gfx950 (MI355X, PR #53906), Ascend 950PR ×8; "weights: about 306 GiB" FP8 | [official recipe](https://recipes.vllm.ai/zai-org/GLM-5.3-Flash) | **No** — no CUDA/ROCm GPU, no 306 GiB |
 | **SGLang** | Supported, **GPU/NPU-only**: v0.5.20+, H100/H200/B200/B300/GB200/GB300/MI355X/TPU7x/Ascend; docker default "four GPUs" | [official cookbook](https://docs.sglang.io/cookbook/autoregressive/GLM/GLM-5.3-Flash) | **No** |
@@ -101,6 +101,11 @@ Every published configuration therefore exceeds this machine's 60.68 GiB of usab
 | Ollama | Claimed "cloud-only" as of Oct 2026 by a secondary source; **not verified** | modemguides blog (secondary, unverified) | Untested by this ticket |
 
 **Net:** the only runtime with a documented CPU-only path is llama.cpp (mainline b11279+ or the Unsloth fork). Its `llama-server` exposes the OpenAI-compatible API with tool calling that Hermes consumes (§8).
+
+### Runtime prerequisite follow-up (2026-10-27)
+
+The v0.7.0 release links nightly [b11669](https://github.com/ggml-org/llama.cpp/releases/tag/b11669), with the same commit `620d2225cc436ab0b001e3200e590e3b286ef9ab`. Its `llama-b11669-bin-ubuntu-x64.tar.gz` CPU asset was downloaded outside the repository: 17,851,611 bytes, SHA256 `cf07c1c112d709bd67e522017471de57ed0ec8bea031d732c5422351c07f65ac`, matching GitHub's asset digest. On this 5040, `llama-server --version` exited successfully and reported `0.7.0-dev (build 11669, commit 620d2225c)`, GNU 11.4.0, Linux x86_64. This avoids an unnecessary source build; it does **not** prove model loading, tool calling, memory fit or throughput. No model weights were downloaded for this prerequisite check.
+
 
 ## 5. Target machine inventory (read-only, measured 2026-10-26)
 
@@ -138,7 +143,7 @@ llama.cpp default-loads GGUF via `mmap`, so the OS page cache streams weights fr
 
 - **Disk space**: 86.7 GiB (UD-IQ1_S) fits the 286.1 GiB free on `/` with headroom for a second quant; the 112 GiB UD-IQ3_XXS (better fidelity) also fits. RAID1 HDD is unsuitable for paging (rotational + degraded).
 - **Paging volume per generated token** `[INFERENCE]`: 8 routed experts × 42 MoE layers = 336 expert-FFN reads/token; each expert ≈ 3×2048×4096 params ≈ 25.2 M params ≈ ~6.9 MiB at IQ1-class bitrates → worst case **~2 GiB of random reads per token** before inter-token page-cache reuse. The governing metric is **QD1 random 4 KiB read latency, not sequential throughput** (MoE routing touches scattered pages across the whole 86.7+ GiB file; the file cannot be fully cached: 86.7 GiB > ~55 GiB cacheable).
-- **Expected speed**: **unknown and likely unusable for interactive tool-calling** `[INFERENCE]`. The only vendor throughput figure, Unsloth's 62.79 t/s decode for UD-IQ1_S, is a **GPU measurement on 1× B200 at baseline tg32, no MTP** (their guide's results table) — it is **not a CPU figure, and no CPU inference speed can be inferred from it**. This machine has 4 AVX2-only cores and no MTP upstream. No source documents a working 64 GiB / 4-core / AVX2 configuration.
+- **Expected speed**: **unknown and likely unusable for interactive tool-calling** `[INFERENCE]`. Unsloth's 62.79 t/s decode for UD-IQ1_S is a **GPU measurement on 1× B200 at baseline tg32, no MTP** — not a CPU figure. No CPU inference speed can be inferred from it. This machine has 4 AVX2-only cores. Mainline v0.7.0 includes MTP support, but its CPU benefit and additional resource cost have not been measured here. No source documents a working 64 GiB / 4-core / AVX2 configuration.
 - **Swap**: the 8 GiB swap file adds nothing for mmap'd weights (the page cache already provides paging; swapping anonymous compute buffers only adds latency).
 - This ticket could not measure local throughput — that requires the ≥86.7 GiB download and is deferred to the ticket #4/#5 live smoke, which must treat "slow but functional" as the success bar and record honest t/s numbers.
 
