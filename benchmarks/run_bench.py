@@ -272,6 +272,7 @@ def run_arm(provider: ControlledProvider, *, arm: str, workload: str, run_id: st
         "effective_context_length": child.get("effective_context_length"),
         "mcp_discovery": child.get("mcp_discovery"),
         "cleanup_errors": child.get("cleanup_errors"),
+        "strays_killed": strays,
         "requests_scripted": len(scripted),
         "requests_auxiliary": len(auxiliary),
         "auxiliary_body_bytes": sum(r["body_bytes"] for r in auxiliary),
@@ -344,6 +345,7 @@ def main() -> int:
     provider: ControlledProvider | None = None
     homes: dict[str, Path] = {}
     ledger = ProcessLedger()
+    report: dict | None = None
     try:
         fixture, count, value_sum = build_fixture(args.fixture_bytes)
         fixture_truth = {"count": count, "sum": value_sum, "bytes": len(fixture)}
@@ -363,7 +365,7 @@ def main() -> int:
             install_report = configure(homes["plugin"], args.engine_bin.expanduser())
             install_report["configured"] = True
 
-        report: dict = {
+        report = {
             "label": "context-mode Hermes controlled-provider benchmark",
             "disclaimer": ("Scripted OpenAI-compatible fake provider on loopback; deterministic "
                            "scripted turns; measures wire request bytes, rough token estimates and "
@@ -407,9 +409,6 @@ def main() -> int:
                 cell["delta_plugin_minus_baseline"] = _delta(cell["plugin"], cell["baseline"])
             report["runs"][workload] = cell
 
-        report["cleanup"] = {"temp_root": str(temp_root), "kept": bool(args.keep),
-                             "strays_killed": all_killed}
-        output.write_text(json.dumps(report, indent=2), encoding="utf-8")
         _print_summary(report)
         print(f"\nreport: {output}")
         valid = all(cell[arm]["child_ok"] and cell[arm]["correct"]
@@ -423,6 +422,12 @@ def main() -> int:
         # (never tripped) means an interruption cannot abort the cleanup, and
         # no command-line/path-prefix selection ever happens here.
         all_killed.extend(sweep_profiles(homes.values(), ledger))
+        if report is not None:
+            report["cleanup"] = {
+                "temp_root": str(temp_root), "kept": bool(args.keep),
+                "strays_killed": all_killed, "signals": ledger.signals,
+            }
+            output.write_text(json.dumps(report, indent=2), encoding="utf-8")
         if not args.keep:
             shutil.rmtree(temp_root, ignore_errors=True)
 

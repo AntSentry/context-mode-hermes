@@ -147,6 +147,8 @@ Environment: engine 1.0.169, Node v22.23.2, pinned Hermes venv (Python 3.14), ad
 
 Net effect of enabling the plugin: **+2,924 bytes / +718 rough tokens** (small) and **+26,548 bytes / +6,327 rough tokens / +1 request** (large). The injected routing guidance and MCP tool schemas cost more than the routing saves on these workloads — the performance gate was failed, and the plugin is not recommended as an always-on token-saving measure. The baseline already spilled the oversized terminal output to files via native Hermes caps, which is where most of the theoretical saving would have come from.
 
+The [2026-10-27 repeat](benchmarks/results/controlled-safety-review.json), after replacing benchmark command-line/group cleanup with per-PID ownership checks, kept both tasks and native limits unchanged: both arms remained correct, request bytes still increased with context-mode, and the normal profile's configuration hash was unchanged. This remains a controlled-provider negative control, not a real-model speed or quality result. Cleanup signals and ownership proofs are retained in the report after the final sweep.
+
 ## Tests
 
 Integration tests exercise the real pinned engine and are skipped unless `CONTEXT_MODE_TEST_BIN` points at the pinned nested engine binary. Run the suite under the pinned Hermes venv:
@@ -186,6 +188,7 @@ Safety envelope, regression-tested in `tests/test_verify_contract.py`:
 - **Identity-verified process handling.** Every signal targets an individual PID whose `/proc/<pid>/environ` still carries the owned `HERMES_HOME` and whose start time matches the recorded proof. A child handle or inherited process group is not sufficient ownership: descendants can select another profile. Cleanup never broadcasts to a process group, matches process names, or signals a PID without this proof.
 - **Bounded, interrupt-safe.** SIGINT/SIGTERM interrupt bounded polls instead of waiting out full subprocess timeouts, clean up owned children within bounded waits (TERM, then KILL), retain the partial evidence, and exit 130/143 — interruption is never success; if any owned survivor outlives bounded cleanup, the owned profile is retained and its path recorded. Unresponsive owned workers are escalated to SIGKILL; foreign processes are never touched.
 - **Input-ready before dispatch.** The owned profile records the pinned Hermes consent-offer version with telemetry disabled, and the driver waits for the native input prompt before sending commands. This avoids losing the first command to startup input flushing or consuming commands in a consent modal.
+- **Consistent executable paths.** Relative `--hermes` and `--engine-bin` paths are resolved against the operator's working directory before launching children with different working directories. The real `verify-live-relative-1` smoke from outside the checkout passed all checks; its raw evidence is included in the archive.
 - **Evidence, not environment dumps.** The evidence directory keeps the raw PTY transcript (ANSI included), one JSON file per provider request as it arrives (bodies complete, `Authorization`-style headers and the generated API key redacted), the installer output, identity proofs for every signal sent, and `verify-report.json`.
 
 Output convention: the final stdout line is `CM-VERIFY: PASS|FAIL|REFUSED|INTERRUPTED evidence=<dir>` with exit codes 0/1/2/130(-143); `--json` additionally prints the full report. The report's `checks` map names every criterion (exact pins, profile isolation, each dispatch, `mcp_stored_content`, `no_inference`, `child_exited`, `default_profile_unchanged`, `no_owned_survivors`, `telemetry_opted_out`); a refusal fires before any interactive command is dispatched (wrong Hermes pin — exact-match, not substring; wrong engine version; non-empty evidence directory; child identity mismatch; unsafe evidence/profile placement).
@@ -204,6 +207,8 @@ Observed on the target 5040 (2026-10-27): `verify-live-5` passed all checks, inc
 The adapter's metadata floor is Python 3.11, but hosted CI exercises only the pinned Hermes v0.22.5 + MCP stack on Python 3.14 (both jobs); Python 3.11–3.13 are not exercised anywhere in this repository's validation.
 
 Both jobs use only a read-only `contents: read` token; the workflow holds no secrets.
+
+At integration commit `dfb0354`, [hosted run 40478567094](https://github.com/AntSentry/context-mode-hermes/actions/runs/40478567094) passed both jobs. The same source passed all 72 local tests on the 5040. Earlier failing runs remain visible; required tests were fixed rather than skipped or narrowed.
 
 Hosted CI proves packaging and adapter integration behavior only. It runs no model, no benchmark and no hardware-specific measurement: GLM runtime, continuity and benefit evidence is the separate local reporting under [Measured results](#measured-results), and a green pipeline is not a real-model benefit claim. Hosted run links for the published integration branch and its PR are recorded by the maintainer in [issue #8](https://github.com/AntSentry/context-mode-hermes/issues/8).
 
