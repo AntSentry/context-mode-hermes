@@ -7,19 +7,21 @@ Engine wraps the hook subprocess protocol; this module owns Hermes-side semantic
 ┌────────────────────────┬────────────────────────────────────────────────────┐
 │ Hermes hook            │ bridge behavior                                    │
 ├────────────────────────┼────────────────────────────────────────────────────┤
-│ pre_tool_call          │ routed tools → engine ``pretooluse``; Claude-Code   │
-│                        │ decisions mapped to Hermes directives: deny→block, │
-│                        │ ask→approve (human gate), updatedInput→modify,      │
-│                        │ additionalContext→deferred guidance.                │
-│                        │ ``mcp__context_mode__ctx_*`` calls fail closed on   │
-│                        │ ask (or an engine-check error): Hermes' approval    │
-│                        │ path forwards RAW arguments (plugin args merge      │
-│                        │ only for modify), and the proxy anchors storage on  │
-│                        │ ``_hermes_context``. On allow, every ctx_* call     │
-│                        │ carries the trusted identity (engine.context)      │
-│                        │ injected via modify — LLM-supplied values are       │
-│                        │ overwritten. Admin tools (ctx_purge/upgrade/        │
-│                        │ insight) are operator-only: blocked with /ctx-*     │
+│ pre_tool_call (+       │ routed tools → engine ``pretooluse``; Claude-Code   │
+│ _identity, registered  │ decisions mapped to Hermes directives: deny→block, │
+│ second)                │ ask→approve (native human gate), updatedInput→     │
+│                        │ modify, additionalContext→deferred guidance. A     │
+│                        │ second mandatory callback stamps the trusted       │
+│                        │ ``_hermes_context`` (engine.context) as a modify    │
+│                        │ on EVERY ``mcp__context_mode__ctx_*`` call: Hermes  │
+│                        │ merges plugin args only for modify and carries them │
+│                        │ through the approve directive, so allow AND        │
+│                        │ human-approved ctx_* calls execute under trusted   │
+│                        │ identity — LLM-forged values are overwritten on    │
+│                        │ every proceeding path. Own tools fail closed only  │
+│                        │ when identity cannot be produced or the engine     │
+│                        │ check errors. Admin tools (ctx_purge/upgrade/      │
+│                        │ insight) are operator-only: blocked with /ctx-*    │
 │                        │ guidance.                                           │
 │ post_tool_call         │ captured tools → engine ``posttooluse`` (session    │
 │                        │ memory; the per-project SessionDB is the store).    │
@@ -366,18 +368,6 @@ class ContextModeBridge:
                 return None
             return {"action": "block", "message": message}
         if decision == "ask":
-            if own_ctx_tool:
-                # Hermes' approval path forwards the RAW LLM arguments when a
-                # call is approved — plugin args are only merged for
-                # ``action: modify`` dispatches (hermes_cli.plugins), and the
-                # proxy anchors per-session storage on ``_hermes_context``.
-                # Our MCP tools therefore fail closed on ask: they only ever
-                # proceed through the identity-modify below.
-                return {"action": "block",
-                        "message": message or (
-                            "context-mode: this call needs an approval that cannot carry the "
-                            "bridge-owned session identity; ask the operator to run the "
-                            "equivalent /ctx-* command.")}
             result: dict[str, Any] = {"action": "approve"}
             if message:
                 result["message"] = message
@@ -403,6 +393,40 @@ class ContextModeBridge:
         if isinstance(context, str) and context.strip():
             self._remember_guidance(session_id, tool_call_id, _remap_names(context))
         return None
+
+    @_hook_safe()
+    def pre_tool_call_identity(self, *, tool_name: str = "",
+                               session_id: str = "", **_kwargs: Any) -> Optional[dict]:
+        """Mandatory identity-modifier for our MCP tools (registered after
+        ``pre_tool_call``).
+
+        Hermes aggregates every ``pre_tool_call`` callback and collects plugin
+        args ONLY from ``action: modify`` results — but it carries the
+        accumulated args THROUGH the approve directive (hermes_cli.plugins,
+        ``_get_pre_tool_call_directive_details``). So this independent
+        callback stamps the bridge-owned ``_hermes_context`` as a modify for
+        every ``mcp__context_mode__ctx_*`` call: allow AND human-approved
+        execution alike dispatch under trusted identity, and an LLM-forged
+        ``_hermes_context`` (which the proxy's first-writer anchor would trust
+        for storage routing) can never survive any proceeding path.
+
+        Fail-closed surface is deliberately narrow — own tools only, and only
+        when the identity itself cannot be produced: policy decisions (deny /
+        ask / redirect honesty) stay in ``pre_tool_call``.
+        """
+        if not session_id or not tool_name.startswith(HERMES_TOOL_PREFIX):
+            return None
+        if not self._engine.available:
+            return {"action": "block",
+                    "message": ("context-mode: engine unavailable; MCP context tools "
+                                "are blocked for this call.")}
+        try:
+            identity = self._engine.context(session_id, self._runtime_cwd())
+        except (EngineError, OSError):
+            return {"action": "block",
+                    "message": ("context-mode: session identity unavailable; MCP context "
+                                "tools are blocked for this call.")}
+        return {"action": "modify", "args": {"_hermes_context": identity}}
 
     @_hook_safe()
     def post_tool_call(self, *, tool_name: str = "", args: Optional[dict] = None,
@@ -553,6 +577,7 @@ class ContextModeBridge:
     def register_hooks(self, ctx: Any) -> None:
         for name, callback in (
             ("pre_tool_call", self.pre_tool_call),
+            ("pre_tool_call", self.pre_tool_call_identity),  # after the policy hook: identity stamps merge last
             ("post_tool_call", self.post_tool_call),
             ("transform_tool_result", self.transform_tool_result),
             ("pre_llm_call", self.pre_llm_call),

@@ -5,10 +5,15 @@ Hermes v0.22.5 launches MCP servers as plain stdio subprocesses and calls
 the upstream context-mode engine keys its knowledge base off the process
 environment. This proxy sits between them and speaks nothing but standard MCP:
 
-* ``tools/list``   -> schemas discovered from a throwaway engine worker, each
+* ``tools/list``   -> schemas discovered from a retained bootstrap engine
+  worker (its own scratch context below the profile root), each schema
   extended with an optional ``_hermes_context`` object (``session_id``,
   ``cwd``, ``project_dir``) that Hermes-side hooks and commands inject into
-  every call.
+  every call. That worker's successful MCP initialize() — reached only via a
+  real client handshake — is also what publishes the profile's readiness
+  sentinel in ``CONTEXT_MODE_MCP_SENTINEL_DIR``; it counts toward the pool
+  bound and closes with the pool, so an un-handshaken proxy never counts as
+  ready.
 * ``tools/call``   -> ``_hermes_context`` is stripped before the call crosses
   the proxy. The session anchor from ``Engine.context`` (first cwd of the
   Hermes session, persisted by the adapter) decides which worker serves the
@@ -18,11 +23,11 @@ environment. This proxy sits between them and speaks nothing but standard MCP:
   ``cwd``, while relative ``path`` arguments and shell ``cwd`` resolve against
   the live Hermes ``cwd``.
 
-Worker subprocesses are bounded by an LRU pool; calls on one worker serialize
-and distinct workers run concurrently. Each worker's MCP client stack is
-opened and closed inside its own task, and every worker lives in the single
-task group that owns the stdio server, so parent EOF or SIGTERM unwinds the
-whole tree without orphans.
+Workers (the bootstrap included) are bounded by an LRU pool; calls on one
+worker serialize and distinct workers run concurrently. Each worker's MCP
+client stack is opened and closed inside its own task, and every worker lives
+in the single task group that owns the stdio server, so parent EOF or SIGTERM
+unwinds the whole tree without orphans.
 """
 from __future__ import annotations
 
@@ -59,13 +64,16 @@ SENTINEL_PREFIX = "context-mode-mcp-ready-"
 
 
 def _publish_sentinel(engine: Engine) -> Path | None:
-    """Publish this profile server's readiness sentinel (upstream convention).
+    """Publish the profile's MCP readiness sentinel (upstream convention).
 
     The pinned engine's hooks decide redirect-vs-passthrough by scanning
     ``CONTEXT_MODE_MCP_SENTINEL_DIR`` for ``context-mode-mcp-ready-<pid>``
-    files and probing the PID (hooks/core/mcp-ready.mjs). This proxy IS the
-    profile's live MCP server, so it publishes its own PID in the
-    profile-owned dir — never machine-global /tmp, which foreign agents also
+    files and probing the PID (hooks/core/mcp-ready.mjs). The file names the
+    proxy — the profile's live MCP server process — but it is only written
+    AFTER a genuine upstream engine worker has completed its MCP initialize()
+    and is retained in the bounded pool (see McpProxy.list_tools), so a
+    spawned-but-never-handshaken proxy is honestly NOT ready. Always in the
+    profile-owned dir, never machine-global /tmp, which foreign agents also
     write.
     """
     directory = engine.environment().get("CONTEXT_MODE_MCP_SENTINEL_DIR")
@@ -299,7 +307,11 @@ class _WorkerPool:
         self._group.start_soon(worker.run)
         return worker
 
-    async def acquire(self, key: tuple[str, str]) -> _Worker:
+    async def acquire(self, key: tuple[str, str], *,
+                      spawn: Any = None) -> _Worker:
+        """Get (or start) the worker for ``key``. ``spawn`` overrides the
+        per-key factory — used for the retained bootstrap worker, which still
+        counts toward the pool bound and LRU policy like any other worker."""
         while True:
             async with self._mutex:
                 worker = self._workers.get(key)
@@ -321,7 +333,7 @@ class _WorkerPool:
                             )
                         victim = self._workers.pop(victim_key)
                         await victim.close()
-                    worker = await self._spawn(key)
+                    worker = await (spawn or self._spawn)(key)
                 self._workers.move_to_end(key)
             await worker.started.wait()
             if worker.startup_error is not None:
@@ -367,14 +379,22 @@ class McpProxy:
         self._group = group
         self._schema_mutex = anyio.Lock()
         self._tools: list[types.Tool] | None = None
+        self._ready_sentinel: Path | None = None
 
-    async def _discovery_worker(self) -> _Worker:
-        """A throwaway worker under a private context below the profile root.
+    def _bootstrap_key(self) -> tuple[str, str]:
+        return ("__discovery__", str(self._engine.host_root / "discovery"))
+
+    async def _spawn_bootstrap(self, key: tuple[str, str]) -> _Worker:
+        """The bootstrap worker: a genuine upstream engine server under a
+        private context below the profile root.
 
         Schema discovery only needs the handshake; it must not touch any real
         session's knowledge base or stats, so it runs with its own scratch
-        CONTEXT_MODE_DIR and project directory and closes immediately after.
-        """
+        CONTEXT_MODE_DIR and project directory. Unlike a throwaway probe, the
+        worker is RETAINED in the bounded pool while the proxy serves (it
+        counts toward the max-worker bound and closes with the pool): its
+        successful initialize() is what proves genuine engine readiness, and
+        only then does the proxy publish the profile sentinel."""
         scratch = self._engine.host_root / "discovery"
         (scratch / "sessions").mkdir(parents=True, exist_ok=True, mode=0o700)
         env = self._engine.environment()
@@ -389,25 +409,23 @@ class McpProxy:
         params = StdioServerParameters(
             command=self._engine.binary, args=[], env=env, cwd=str(scratch)
         )
-        worker = _Worker(("__discovery__", str(scratch)), params)
+        worker = _Worker(key, params)
         self._group.start_soon(worker.run)
-        await worker.started.wait()
-        if worker.startup_error is not None:
-            raise RuntimeError(
-                f"cannot list context-mode tools; engine failed to start: "
-                f"{worker.startup_error!r}"
-            ) from worker.startup_error
         return worker
 
     async def list_tools(self, _ctx: Any, _params: Any = None) -> types.ListToolsResult:
         async with self._schema_mutex:
             if self._tools is None:
-                worker = await self._discovery_worker()
-                try:
-                    request = _Request(list_tools=True)
-                    await worker.request(request)
-                finally:
-                    await worker.close()
+                # Real MCP handshake path: a client's initialize() reaches
+                # tools/list, the pool starts the genuine bootstrap worker, and
+                # ONLY a successfully initialized upstream worker publishes the
+                # profile's readiness sentinel. A proxy spawned but never
+                # handshaken is honestly NOT ready.
+                worker = await self._pool.acquire(
+                    self._bootstrap_key(), spawn=self._spawn_bootstrap)
+                self._ready_sentinel = _publish_sentinel(self._engine)
+                request = _Request(list_tools=True)
+                await worker.request(request)
                 if request.error is not None:
                     raise RuntimeError(
                         f"context-mode tool discovery failed: {request.error!r}"
@@ -445,7 +463,10 @@ class McpProxy:
         return types.CallToolResult(**payload)
 
     async def aclose(self) -> None:
-        """Close every live worker (serve() drives this at shutdown)."""
+        """Retract the readiness sentinel, then close every live worker — the
+        retained bootstrap worker included (serve() drives this at shutdown)."""
+        _retract_sentinel(self._ready_sentinel)
+        self._ready_sentinel = None
         await self._pool.aclose()
 
 
@@ -464,15 +485,6 @@ def _engine_version(engine: Engine) -> str:
 
 
 async def serve(engine: Engine, max_workers: int) -> None:
-    """Serve stdio MCP and keep this profile's readiness sentinel published."""
-    sentinel = _publish_sentinel(engine)
-    try:
-        await _serve_until_eof(engine, max_workers)
-    finally:
-        _retract_sentinel(sentinel)
-
-
-async def _serve_until_eof(engine: Engine, max_workers: int) -> None:
     async with anyio.create_task_group() as group:
         group.start_soon(_exit_on_signal, group)
         proxy = McpProxy(engine, max_workers, group)

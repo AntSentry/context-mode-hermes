@@ -39,6 +39,8 @@ import os
 import sqlite3
 import uuid
 import subprocess
+import sys
+import textwrap
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -157,17 +159,42 @@ def live_plugin(plugin):
         mcp_tool_lifecycle.shutdown_mcp_servers()
 
 
-def _spawn_profile_server(cm):
-    """Run the profile's real MCP server (the configured stdio proxy command)
-    without connecting it from THIS process: engine hooks see its live
-    sentinel while Hermes' own status stays cold — the real cross-oracle case."""
-    from hermes_cli.config import read_raw_config
+_NATIVE_SERVER_CHILD = textwrap.dedent("""
+    import signal, sys, time
 
-    server = read_raw_config()["mcp_servers"]["context-mode"]
-    env = {**os.environ, **server.get("env", {})}
-    return subprocess.Popen([server["command"], *server.get("args", [])], env=env,
-                            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL)
+    from hermes_cli.config import load_config
+    from tools import mcp_tool_lifecycle
+    from tools.mcp_tool_discovery import register_mcp_servers
+
+    register_mcp_servers(load_config()["mcp_servers"])  # real handshake: initialize + tools/list
+    print("NATIVE-READY", flush=True)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    try:
+        time.sleep(600)
+    finally:
+        mcp_tool_lifecycle.shutdown_mcp_servers()
+""")
+
+
+def _spawn_native_profile_server(cm):
+    """Hermes' own native MCP startup, run in a helper process against the
+    profile: register_mcp_servers performs the real handshake (initialize +
+    tools/list), so the proxy retains its genuine bootstrap worker and
+    publishes the profile sentinel — while THIS process's Hermes registry
+    stays cold. The honest engine-ready / Hermes-cold cross-oracle case."""
+    env = {**os.environ, "HERMES_HOME": str(cm.home)}
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _NATIVE_SERVER_CHILD], env=env,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True,
+        cwd=str(Path(__file__).resolve().parent.parent),
+    )
+    first = proc.stdout.readline().strip()
+    if first != "NATIVE-READY":
+        proc.terminate()
+        detail = proc.stderr.read()[-2000:] if proc.stderr else ""
+        raise AssertionError(f"native profile server failed to start: {first!r} {detail}")
+    return proc
 
 
 def _dispatch_pre(**kwargs):
@@ -321,7 +348,7 @@ def test_security_policy_deny_survives_mcp_unready_while_redirects_suppress(plug
         # here can only come from the security policy gate.
         json.dumps({"permissions": {"deny": ["Bash(git status:*)"]}}), encoding="utf-8"
     )
-    server = _spawn_profile_server(plugin.cm)
+    server = _spawn_native_profile_server(plugin.cm)
     try:
         _await_profile_sentinel(plugin.cm)
         assert not plugin.bridge._mcp_ready(), "Hermes' own status must still be cold"
@@ -339,16 +366,30 @@ def test_security_policy_deny_survives_mcp_unready_while_redirects_suppress(plug
         assert block2 is None, "redirect-shaped blocks are suppressed when MCP is down"
     finally:
         server.terminate()
-        server.wait(timeout=15)
+        try:
+            server.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=5)
 
 
-def test_own_ctx_ask_fails_closed_and_never_leaks_llm_identity(plugin, monkeypatch):
-    """Engine 'ask' on our MCP tools fails closed. Hermes' approval path
-    forwards RAW arguments when a call is approved (plugin args are only
-    merged for action=modify dispatches), so an approved ctx_* call could
-    carry an LLM-forged _hermes_context — and the proxy's first-writer anchor
-    trusts session_id/cwd for storage routing. Asserted through the real
-    Hermes directive resolution (hermes_cli.plugins)."""
+def test_own_ctx_ask_executes_under_trusted_identity_after_human_approval(plugin, monkeypatch):
+    """Engine 'ask' on our MCP tools escalates to the NATIVE human-approval
+    gate — not a bridge-side block — and the human-approved call EXECUTES with
+    the bridge-owned _hermes_context.
+
+    Hermes aggregates every pre_tool_call callback: plugin args merge only
+    from action=modify results, and the accumulated args ride the approve
+    directive (hermes_cli.plugins). The bridge's mandatory identity callback
+    therefore stamps the trusted identity as a modify, so approval can never
+    forward the LLM-forged metadata the proxy would otherwise anchor storage
+    on. The human decision is driven through the REAL approval gate: the
+    session allowlist (the gate's own '[a]lways' store, seeded via
+    tools.approval.approve_session) approves the exact plugin rule."""
+    from tools.approval import approve_session
+    from tools.approval_context import get_current_session_key
+    import tools.approval as approval_state
+
     def ask(_event, _payload):
         return {"hookSpecificOutput": {"permissionDecision": "ask",
                                        "permissionDecisionReason": "needs confirmation"}}
@@ -356,24 +397,59 @@ def test_own_ctx_ask_fails_closed_and_never_leaks_llm_identity(plugin, monkeypat
     monkeypatch.setattr(plugin.engine, "hook", ask)
     sid = _sid()
     forged = {"session_id": "forged", "cwd": "/etc", "project_dir": "/etc"}
-    block, modified = _dispatch_pre(
-        tool_name="mcp__context_mode__ctx_execute",
-        args={"language": "javascript", "code": "1", "_hermes_context": forged},
-        session_id=sid, task_id="t", tool_call_id="c", turn_id="u", api_request_id="",
-    )
-    assert block, "own-ctx 'ask' must fail closed (never an approval that drops identity)"
-    assert "needs confirmation" in block
-    assert modified is None, "a blocked call must not dispatch any args"
+    tool_name = "mcp__context_mode__ctx_execute"
+    args = {"language": "javascript", "code": "1", "_hermes_context": forged}
+    session_key = get_current_session_key()
+    pattern_key = f"plugin_rule:{tool_name}"  # _dispatch passes rule_key=tool_name
 
-    # Non-own tools keep the documented ask→human-gate mapping, asserted at
-    # the hook-contract level: resolving an approve directive would open the
-    # interactive approval gate here.
+    # Unapproved (fresh session store): the gate itself fails closed — the
+    # operation does NOT execute and nothing dispatches.
+    block, modified = _dispatch_pre(
+        tool_name=tool_name, args=args,
+        session_id=sid, task_id="t", tool_call_id="c0", turn_id="u", api_request_id="",
+    )
+    assert block, "an unapproved escalation must not execute"
+    assert "forged" not in json.dumps(modified or {}), "no forged metadata anywhere"
+
+    # The human (via the gate's session allowlist) approves this exact rule:
+    # the call proceeds — with trusted identity, forged values gone.
+    try:
+        approve_session(session_key, pattern_key)
+        block2, modified2 = _dispatch_pre(
+            tool_name=tool_name, args=dict(args),
+            session_id=sid, task_id="t", tool_call_id="c1", turn_id="u", api_request_id="",
+        )
+        assert block2 is None, f"approved call must execute, got: {block2}"
+        assert modified2 is not None, "the executor dispatches modified args, not raw args"
+        assert modified2["_hermes_context"] == plugin.engine.context(sid, os.getcwd())
+        assert modified2["_hermes_context"] != forged
+    finally:
+        approval_state._session_approved.get(session_key, set()).discard(pattern_key)
+
+    # Non-own tools keep the same ask→human-gate mapping at the hook level.
     results = _invoke(
         "pre_tool_call", tool_name="terminal", args={"command": "rm -rf /tmp/x"},
         session_id=sid, task_id="t", tool_call_id="c2", turn_id="u2", api_request_id="",
     )
     decision = next(r for r in results if isinstance(r, dict) and r.get("action") == "approve")
     assert "needs confirmation" in decision["message"]
+
+
+def test_own_ctx_missing_identity_fails_closed(plugin, monkeypatch):
+    """If the trusted identity cannot be produced at all, own tools fail
+    closed; other tools are untouched (no identity is involved for them)."""
+    from context_mode_hermes.engine import EngineError
+
+    def broken_identity(_session_id, _cwd):
+        raise EngineError("identity unavailable")
+
+    monkeypatch.setattr(plugin.engine, "context", broken_identity)
+    block, _ = _dispatch_pre(
+        tool_name="mcp__context_mode__ctx_stats",
+        args={"_hermes_context": {"session_id": "forged", "cwd": "/etc", "project_dir": "/etc"}},
+        session_id=_sid(), task_id="t", tool_call_id="c", turn_id="u", api_request_id="",
+    )
+    assert block, "own-ctx calls must fail closed when identity cannot be produced"
 
 
 def test_own_ctx_engine_error_fails_closed_while_other_tools_stay_fail_open(plugin, monkeypatch):
