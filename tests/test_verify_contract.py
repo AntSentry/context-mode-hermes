@@ -605,3 +605,34 @@ def test_ambient_hermes_home_never_reaches_the_child(fake_stack: dict) -> None:
     assert "CONTEXT_MODE_MCP_SENTINEL_DIR" in run.report["env"]["scrubbed"], (
         "an ambient sentinel dir must never reach a smoke child")
     assert (fake_stack["default_home"] / "config.yaml").read_text(encoding="utf-8") == "model: untouched\n"
+
+
+def test_relative_executable_args_canonicalize_once_before_any_child(fake_stack: dict, tmp_path: Path) -> None:
+    """Public verify run from a NON-repo cwd with RELATIVE --hermes and
+    --engine-bin: both canonicalize once against the operator's cwd before any
+    child is launched, so the installer child (cwd = repo root) resolves the
+    same engine binary, the stored engine_binary matches, and the exact pin
+    checks hold. Asserted on the independently retrieved report body — the
+    engine symlink resolves to the real CLI, as the pinned nested layout
+    checks expect."""
+    cwd = tmp_path / "operator-cwd"
+    cwd.mkdir()
+    evidence = fake_stack["evidence_root"] / f"ev{time.monotonic_ns()}"
+    cmd = [
+        sys.executable, "-m", VERIFY_MODULE,
+        "--hermes", os.path.relpath(fake_stack["hermes"], cwd),
+        "--engine-bin", os.path.relpath(fake_stack["engine_bin"], cwd),
+        "--evidence-dir", str(evidence),
+        "--profile-root", str(fake_stack["profile_root"]),
+    ]
+    merged = {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"}
+    proc = subprocess.Popen(cmd, cwd=str(cwd), env=merged,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    run = VerifyRun(proc, evidence)
+
+    assert run.returncode == 0, run.stderr
+    assert run.status == "pass"
+    assert run.report["checks"]["engine_pin"]["ok"]
+    assert run.report["checks"]["installer_configured_owned_profile"]["ok"]
+    assert Path(run.report["engine_bin"]) == fake_stack["engine_bin"].resolve()
+    assert Path(run.report["hermes"]) == fake_stack["hermes"]

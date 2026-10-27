@@ -681,7 +681,12 @@ class Smoke:
         if not hermes:
             raise Refused("--hermes is required: point it at the pinned Hermes "
                           f"v{HERMES_PIN} CLI")
-        hermes = Path(str(hermes)).expanduser()
+        # Canonicalize once against the operator's cwd before ANY child runs:
+        # the version probe child runs under the owned home and the installer
+        # child under the repo root, so a relative path would resolve to a
+        # different (or missing) executable there. resolve() follows the
+        # nested-layout symlink to the real CLI; the exact pin checks stay.
+        hermes = Path(str(hermes)).expanduser().resolve()
         if not (hermes.is_file() and os.access(hermes, os.X_OK)):
             raise Refused(f"--hermes is not an executable file: {hermes}")
         self.args.hermes = hermes
@@ -705,7 +710,7 @@ class Smoke:
             raise Refused("Hermes version is not the pinned one; refusing to launch anything")
         if not self.args.engine_bin:
             raise Refused("--engine-bin is required: point it at the pinned context-mode binary")
-        engine_bin = Path(str(self.args.engine_bin)).expanduser()
+        engine_bin = Path(str(self.args.engine_bin)).expanduser().resolve()
         engine = Engine(binary=str(engine_bin),
                         storage_root=str(self.owned_home / "context-mode"))
         found = getattr(engine, "version", "unknown")
