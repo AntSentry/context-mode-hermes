@@ -16,8 +16,10 @@ What this integration does:
 What it does **not** do:
 
 - **It is not a token-saving optimization.** The controlled benchmark below measured a net *increase* in wire bytes and rough token estimates with the plugin enabled, on both workloads. Do not deploy it always-on expecting context-window savings; native Hermes already spills oversized terminal output to files on its own.
-- **It has not been validated against any real model.** No LLM quality, speed, or cost claims are made (and none are possible from the controlled benchmark). In particular there is no GLM validation of any kind — no GLM weights or inference were used anywhere in this work.
+- **The context-mode integration has not yet passed real-model acceptance.** A separate native-Hermes baseline now runs the exact local GLM-5.3-Flash artifact and has completed a tool-dependent conversation. This does not validate context-mode continuity or establish a quality, speed or context-cost benefit.
 - **It is not a security sandbox.** See [Security & isolation](#security--isolation).
+
+**Local GLM baseline on the 5040:** [artifact, launch, stop and measured runtime evidence](docs/glm-5.3-flash-local-runtime.md). The verified warm-cache tool turn took about 98 minutes; it read about 1.70 TB during the window. Slow disk-backed execution is demonstrated, not practical responsiveness or a context-mode improvement.
 
 ## Compatibility
 
