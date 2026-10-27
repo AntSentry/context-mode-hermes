@@ -10,16 +10,17 @@ independent expected outcomes:
 * ``ctx_index`` stores content under a unique marker and ``ctx_search``
   retrieves text that was stored — an echo of the query cannot satisfy it.
 
-The script also asserts that ``context_mode_hermes`` imports from the virtual
-environment that installed the wheel, not from a source checkout. Run it with
-the smoke virtualenv's interpreter from a working directory outside the
-checkout:
+The script also asserts that ``context_mode_hermes`` imports from the
+virtual environment that installed the wheel — the locked pinned Hermes
+environment, whose ``configure``-capable interpreter the public installer
+command requires — and not from a source checkout. Run it with that
+virtualenv's interpreter from a working directory outside the checkout:
 
-    smoke-venv/bin/python .github/scripts/clean_distribution_smoke.py --home <home>
+    <pinned-hermes-venv>/bin/python .github/scripts/clean_distribution_smoke.py --home <home>
 
-Exits non-zero with a diagnostic on the first failed expectation. Requires the
-``mcp`` client SDK (pinned to the same version as Hermes) in the same
-environment.
+Exits non-zero with a diagnostic on the first failed expectation. Requires
+the ``mcp`` client SDK, provided by the same locked Hermes environment the
+wheel is installed into.
 """
 
 from __future__ import annotations
