@@ -41,12 +41,20 @@ def _wait_visible(home: Path, *pids: int, timeout: float = 10.0) -> None:
 
 
 def _spawn(home: Path, *argv_markers: str, ignore_term: bool = False) -> subprocess.Popen:
-    code = ("import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-            "time.sleep(300)" if ignore_term else "import time; time.sleep(300)")
-    return subprocess.Popen(
+    setup = "signal.signal(signal.SIGTERM, signal.SIG_IGN); " if ignore_term else ""
+    code = "import signal, time; " + setup + "print('READY', flush=True); time.sleep(300)"
+    proc = subprocess.Popen(
         [sys.executable, "-c", code, *argv_markers],
         env={**os.environ, "HERMES_HOME": str(home)},
-        start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    # /proc visibility precedes Python installing its handler; acknowledge that
+    # transition before the timeout test is allowed to deliver SIGTERM.
+    ready = proc.stdout.readline()
+    proc.stdout.close()
+    if ready != "READY\n":
+        _reap(proc)
+        raise AssertionError("child exited before its signal handler was ready")
+    return proc
 
 
 def _spawn_decoy(root: Path) -> subprocess.Popen:
