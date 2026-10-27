@@ -2,13 +2,27 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, "integration/**" ]
   pull_request:
     branches: [ main ]
 
+# Least-privilege token: CI only needs to read the repository. No secrets,
+# credentials, model weights or private profile data are used by any job.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  # Pinned Hermes + MCP stack, editable adapter install, nested real engine,
+  # full real-engine integration suite. A skipped test is a failure: a missing
+  # engine prerequisite must never become a silent green run.
+  integration:
+    name: pinned Hermes + MCP real-engine suite (py3.14 / node22)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -24,17 +38,94 @@ jobs:
 
       - name: Install locked Hermes and adapter
         run: |
+          set -euo pipefail
           python -m pip install uv
           git clone --depth 1 --branch v0.22.5 https://github.com/NousResearch/hermes-agent.git "$RUNNER_TEMP/hermes-agent"
           uv sync --project "$RUNNER_TEMP/hermes-agent" --locked --python 3.14 --no-dev --extra mcp
           uv pip install --python "$RUNNER_TEMP/hermes-agent/.venv/bin/python" -e ".[dev]"
-          echo "$RUNNER_TEMP/hermes-agent/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Install locked context-mode engine
-        run: context-mode-hermes --home "$HOME/hermes-context-mode-ci" --install-engine
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/hermes-agent/.venv/bin/context-mode-hermes" --home "$RUNNER_TEMP/hermes-home" --install-engine
+          test -x "$RUNNER_TEMP/hermes-home/context-mode-runtime/node_modules/.bin/context-mode"
 
       - name: Run real-engine tests
         run: |
-          export CONTEXT_MODE_TEST_BIN="$HOME/hermes-context-mode-ci/context-mode-runtime/node_modules/.bin/context-mode"
-          test -x "$CONTEXT_MODE_TEST_BIN"
-          python -m pytest -vv -ra
+          set -euo pipefail
+          export CONTEXT_MODE_TEST_BIN="$RUNNER_TEMP/hermes-home/context-mode-runtime/node_modules/.bin/context-mode"
+          "$RUNNER_TEMP/hermes-agent/.venv/bin/python" -m pytest -vv -ra --junitxml="$RUNNER_TEMP/pytest.xml"
+
+      - name: Fail if any test was skipped or did not run
+        if: always()
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/hermes-agent/.venv/bin/python" "$GITHUB_WORKSPACE/.github/scripts/assert_junit_all_passed.py" "$RUNNER_TEMP/pytest.xml"
+
+  # Distribution proof: the wheel built from this checkout installs (never
+  # editable) into the locked pinned Hermes environment — the same stack the
+  # integration job validates — its public installer command installs the
+  # locked nested engine, and the real engine executes and round-trips
+  # index/search over the public MCP stdio interface. Every post-build step
+  # runs from outside the source checkout so nothing can resolve from the
+  # developer's checkout layout.
+  clean-distribution-smoke:
+    name: clean wheel smoke (pinned Hermes py3.14 / node22)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build wheel from the checkout
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade build
+          python -m build --wheel --outdir "$RUNNER_TEMP/dist" .
+
+      - name: Install locked Hermes
+        run: |
+          set -euo pipefail
+          python -m pip install uv
+          git clone --depth 1 --branch v0.22.5 https://github.com/NousResearch/hermes-agent.git "$RUNNER_TEMP/hermes-agent"
+          uv sync --project "$RUNNER_TEMP/hermes-agent" --locked --python 3.14 --no-dev --extra mcp
+
+      - name: Install adapter wheel into the pinned Hermes venv
+        run: |
+          set -euo pipefail
+          uv pip install --python "$RUNNER_TEMP/hermes-agent/.venv/bin/python" "$RUNNER_TEMP/dist"/context_mode_hermes-*.whl
+
+      - name: Install locked engine via the wheel's public command
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/hermes-agent/.venv/bin/context-mode-hermes" --home "$RUNNER_TEMP/smoke-home" --install-engine
+          test -x "$RUNNER_TEMP/smoke-home/context-mode-runtime/node_modules/.bin/context-mode"
+
+      - name: Assert installed engine matches the packaged lock
+        run: |
+          set -euo pipefail
+          node -e '
+            const pinned = require(process.env.GITHUB_WORKSPACE + "/context_mode_hermes/runtime/package.json").dependencies["context-mode"];
+            const installed = require(process.env.RUNNER_TEMP + "/smoke-home/context-mode-runtime/node_modules/context-mode/package.json").version;
+            if (pinned !== installed) {
+              console.error("installed engine " + installed + " does not match the packaged lock " + pinned);
+              process.exit(1);
+            }
+            console.log("installed engine " + installed + " matches the packaged lock");
+          '
+
+      - name: Exercise execution and index/search on the real engine
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/hermes-agent/.venv/bin/python" "$GITHUB_WORKSPACE/.github/scripts/clean_distribution_smoke.py" --home "$RUNNER_TEMP/smoke-home"
