@@ -121,7 +121,9 @@ def remove(home: Path) -> dict:
     Configuration-only by contract: no engine/Node/npm access, no network, no
     data deletion. The CURRENT config is rewritten through Hermes's atomic
     configuration writer so settings changed after installation survive (never
-    a stale pre-install snapshot rollback); the engine runtime, indexed
+    a stale pre-install snapshot rollback); a verified current
+    recovery copy is taken via Hermes' native config-backup helper before the
+    rewrite and removal fails closed without one; the engine runtime, indexed
     content, captured sessions, the pre-install backup and the installed
     adapter package are all retained, and other profiles are never touched.
     A profile without a prior integration is a successful no-op that writes
@@ -163,13 +165,32 @@ def remove(home: Path) -> dict:
         if removed["mcp_server"]:
             del servers["context-mode"]
         changed = config != original
+        recovery_backup = None
         if changed:
+            from hermes_cli.config_backups import backup_config, list_config_backups
+
+            config_path = get_config_path()
+            recovery_backup = backup_config(config_path, "context-mode-removal", keep=5)
+            if recovery_backup is None:
+                # The helper returns None both when the newest same-reason backup
+                # already holds identical bytes (recoverable) and when it failed
+                # (not recoverable). Distinguish, and fail before any mutation.
+                newest = list_config_backups(config_path, "context-mode-removal")
+                if not newest or newest[0].read_bytes() != config_path.read_bytes():
+                    raise EngineError(
+                        "no verified current recovery copy of config.yaml could be "
+                        "created; refusing to rewrite the configuration; nothing "
+                        "was changed")
+                recovery_backup = newest[0]
             save_config(config, strip_defaults=False)
+        entry = entries.get("context-mode") if isinstance(entries.get("context-mode"), dict) else {}
+        settings = entry.get("settings") if isinstance(entry.get("settings"), dict) else {}
         return {"home": str(home), "changed": changed, "removed": removed,
-                "retained": {"storage_dir": str(home / "context-mode"),
-                             "runtime_dir": str(home / "context-mode-runtime"),
+                "retained": {"storage_dir": settings.get("storage_dir") or str(home / "context-mode"),
+                             "engine_binary": settings.get("engine_binary"),
                              "host_dir": str(home / "context-mode-host"),
                              "pre_install_backup": str(home / "config.yaml.before-context-mode")},
+                "recovery_backup": str(recovery_backup) if recovery_backup is not None else None,
                 "adapter": "kept installed; removal is configuration-only"}
     finally:
         reset_hermes_home_override(token)

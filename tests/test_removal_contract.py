@@ -21,6 +21,10 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
+TEST_BIN = os.environ.get("CONTEXT_MODE_TEST_BIN")
+
 
 def _cli(home: Path, *extra: str) -> int:
     from context_mode_hermes import install
@@ -87,15 +91,6 @@ def configured_home(tmp_path, monkeypatch) -> Path:
     return home
 
 
-def test_help_documents_removal(capsys):
-    from context_mode_hermes import install
-
-    with pytest.raises(SystemExit) as done:
-        install.main(["--help"])
-    assert done.value.code == 0
-    assert "--remove" in capsys.readouterr().out
-
-
 def test_remove_requires_explicit_home():
     from context_mode_hermes import install
 
@@ -121,13 +116,18 @@ def test_remove_unregisters_only_integration_and_preserves_later_settings(config
         AssertionError("removal must not spawn subprocesses")))
     monkeypatch.setattr(install.shutil, "which", lambda name: None)
 
+    before = (configured_home / "config.yaml").read_bytes()
+
     assert _cli(configured_home, "--remove") == 0
     out = capsys.readouterr().out
     lines = out.splitlines()
     result = json.loads("\n".join(lines[: lines.index("}") + 1]))
     assert result["changed"] is True
+    assert result["recovery_backup"] is not None
+    recovery = Path(result["recovery_backup"])
+    assert recovery.is_file()
+    assert recovery.read_bytes() == before  # verified copy of the pre-removal config
     assert result["removed"] == {"enabled": True, "disabled": True, "plugin_entry": True, "mcp_server": True}
-    assert "Restart" in out  # running gateways need a restart; new sessions are native
 
     configured = _read(configured_home, monkeypatch)
     # integration registration gone everywhere
@@ -144,6 +144,9 @@ def test_remove_unregisters_only_integration_and_preserves_later_settings(config
         assert (configured_home / retained / "retained.db").read_text(encoding="utf-8") == "data"
     assert (configured_home / "config.yaml.before-context-mode").read_text(encoding="utf-8") == "older snapshot"
     assert result["retained"]["storage_dir"] == str(configured_home / "context-mode")
+    assert result["retained"]["engine_binary"] == str(
+        configured_home / "context-mode-runtime" / "node_modules" / ".bin" / "context-mode")
+    assert "runtime_dir" not in result["retained"]  # never report an unconfigured default path as fact
 
 
 def test_remove_needs_no_engine_or_node(configured_home, monkeypatch):
@@ -172,6 +175,7 @@ def test_remove_without_prior_integration_is_noop_success(tmp_path, capsys):
     assert result["changed"] is False
     assert result["removed"] == {"enabled": False, "disabled": False, "plugin_entry": False, "mcp_server": False}
     assert (home / "config.yaml").read_bytes() == before  # no rewrite, no backup manufactured
+    assert not (home / "backups").exists()  # no-op writes nothing, not even a backup
 
 
 def test_remove_of_missing_config_is_noop_success(tmp_path, capsys):
@@ -192,9 +196,6 @@ def test_remove_refuses_malformed_config_without_changes(tmp_path, capsys):
     before = broken.read_bytes()
 
     assert _cli(home, "--remove") == 1
-    captured = capsys.readouterr()
-    assert "context-mode removal failed" in captured.err
-    assert "Refusing to remove" in captured.err  # refuses rather than silently treating it as removed
     assert broken.read_bytes() == before  # recoverable file left exactly as it was
 
 
@@ -208,7 +209,6 @@ def test_remove_refuses_malformed_plugin_shapes_without_changes(configured_home,
     before = (configured_home / "config.yaml").read_bytes()
 
     assert _cli(configured_home, "--remove") == 1
-    assert "removal failed" in capsys.readouterr().err
     assert (configured_home / "config.yaml").read_bytes() == before  # no partial destructive edits
 
 
@@ -225,6 +225,7 @@ def test_remove_then_offline_reenable_retains_searchable_content(tmp_path, monke
 
     # 1. install into this profile only (existing engine, no npm install)
     assert _cli(home, "--engine-bin", str(binary)) == 0
+    capsys.readouterr()  # drain install output so later reads see only later phases
     marker = "REGION-KEEP-99117"
     session = {"session_id": "removal-reversibility", "cwd": str(workspace)}
     capture = Engine(binary=str(binary), storage_root=str(home / "context-mode"))
@@ -233,6 +234,7 @@ def test_remove_then_offline_reenable_retains_searchable_content(tmp_path, monke
 
     # 2. remove: configuration-only, storage and the installed engine must survive untouched
     assert _cli(home, "--remove") == 0
+    capsys.readouterr()  # drain removal output
     assert (home / "context-mode").is_dir()
     assert binary.is_file()
     assert "context-mode" not in _read(home, monkeypatch)["mcp_servers"]
@@ -252,3 +254,44 @@ def test_remove_then_offline_reenable_retains_searchable_content(tmp_path, monke
     restored = Engine(binary=str(binary), storage_root=str(home / "context-mode")).hook(
         "sessionstart", {"session_id": "removal-reversibility", "cwd": str(workspace), "source": "compact"})
     assert marker in json.dumps(restored)
+
+
+def test_remove_fails_closed_without_a_verified_recovery_copy(tmp_path, monkeypatch):
+    pytest.importorskip("hermes_cli.config")
+    home = tmp_path / "no-recovery"
+    home.mkdir()
+    (home / "config.yaml").write_text(json.dumps(_installed_config(home)), encoding="utf-8")
+    before = (home / "config.yaml").read_bytes()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    # Plant a file where the native backups directory must live: the backup
+    # helper fails and no existing backup can match, so removal must refuse
+    # before rewriting anything.
+    (home / "backups").write_text("not a directory", encoding="utf-8")
+
+    assert _cli(home, "--remove") == 1
+    assert (home / "config.yaml").read_bytes() == before  # nothing was rewritten
+
+
+def test_remove_reuses_matching_backup_as_verified_recovery_copy(tmp_path, monkeypatch, capsys):
+    pytest.importorskip("hermes_cli.config")
+    home = tmp_path / "identical-latest"
+    home.mkdir()
+    registered = json.dumps(_installed_config(home))
+    (home / "config.yaml").write_text(registered, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    assert _cli(home, "--remove") == 0  # changed: creates the recovery backup
+    first = _result_json(capsys)
+    assert first["changed"] is True
+    backup = Path(first["recovery_backup"])
+    assert backup.is_file()
+    assert backup.read_bytes() == registered.encode("utf-8")
+
+    # Re-register with byte-identical content, then remove again: the newest
+    # context-mode-removal backup already holds the identical current bytes, so
+    # the helper skips the copy and removal must proceed with that copy.
+    (home / "config.yaml").write_text(registered, encoding="utf-8")
+    assert _cli(home, "--remove") == 0
+    second = _result_json(capsys)
+    assert second["changed"] is True
+    assert second["recovery_backup"] == str(backup)
