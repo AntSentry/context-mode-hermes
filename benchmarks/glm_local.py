@@ -90,6 +90,19 @@ def _sha256_file(path: Path, chunk: int = 1 << 20) -> str:
     return digest.hexdigest()
 
 
+def _engine_identity() -> dict:
+    identity = {"path": str(ENGINE_PATH), "sha256_expected": ENGINE_SHA256,
+                "sha256_computed": None, "verified": False,
+                "archive_sha256_pinned": ENGINE_ARCHIVE_SHA256,
+                "version": ENGINE_VERSION}
+    try:
+        identity["sha256_computed"] = _sha256_file(ENGINE_PATH)
+    except OSError as exc:
+        identity["error"] = f"{type(exc).__name__}: {exc}"
+    identity["verified"] = identity["sha256_computed"] == ENGINE_SHA256
+    return identity
+
+
 def verify_model(models_dir: Path, *, deep: bool = False) -> dict:
     """Check every shard's size; with ``deep`` also re-hash each shard."""
     report: dict = {"models_dir": str(models_dir), "deep": deep, "shards": [],
@@ -133,6 +146,9 @@ def build_server_cmd(*, models_dir: Path, port: int, api_key: str,
     persistent key out of argv/logs (0600 file, native supervisor
     convention); otherwise a per-run key rides argv for the evidence log.
     """
+    identity = _engine_identity()
+    if not identity["verified"]:
+        raise RuntimeError(f"Refusing unverified engine: {identity}")
     first_shard = models_dir / SHARDS[0][0]
     engine_argv = [
         str(ENGINE_PATH),
@@ -469,7 +485,13 @@ def launch_server(*, port: int, prompts_dir: Path, log_path: Path,
 
 
 def _proc_absent(pid: int) -> bool:
-    return not Path(f"/proc/{pid}").exists()
+    try:
+        Path(f"/proc/{pid}").stat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False  # inaccessible is not evidence of absence
+    return False
 
 
 def stop_server(state: ServerState, *, term_timeout_s: float = 45.0,
@@ -490,8 +512,16 @@ def stop_server(state: ServerState, *, term_timeout_s: float = 45.0,
                 "pid_gone": None, "unit": state.unit}
 
     def identity_current() -> str | None:
-        """Fresh start-time, or None when unreadable. Absence is separate."""
+        """Reap a direct child before observing its remaining identity."""
+        if state.proc is not None and state.proc.pid == state.server_pid:
+            state.proc.poll()
         return _start_time(state.server_pid)
+
+    def observed_gone() -> bool | None:
+        current = identity_current()
+        if _proc_absent(state.server_pid):
+            return True
+        return None if current is None else current != captured
 
     # Enumerate owned descendants with captured identity BEFORE wrapper kill.
     descendants: list[tuple[int, str]] = []
@@ -508,7 +538,7 @@ def stop_server(state: ServerState, *, term_timeout_s: float = 45.0,
                 descendants.append((pid, child_start))
 
     gone: bool | None
-    if _proc_absent(state.server_pid):
+    if observed_gone() is True:
         gone = True  # already exited before us; nothing to signal
     else:
         current = identity_current()
@@ -525,13 +555,10 @@ def stop_server(state: ServerState, *, term_timeout_s: float = 45.0,
                 events.append({"signal": "SIGTERM", "pid": state.server_pid,
                                "error": str(exc)})
             deadline = time.monotonic() + term_timeout_s
-            gone = _proc_absent(state.server_pid)
-            while not gone and time.monotonic() < deadline:
-                now = identity_current()
-                if _proc_absent(state.server_pid) or now != captured:
-                    gone = True
-                    break
-                time.sleep(0.5)
+            gone = observed_gone()
+            while gone is not True and time.monotonic() < deadline:
+                time.sleep(0.05)
+                gone = observed_gone()
             if not gone:
                 # Re-prove identity immediately; missing data never signals.
                 if not _proc_absent(state.server_pid) \
@@ -543,23 +570,23 @@ def stop_server(state: ServerState, *, term_timeout_s: float = 45.0,
                                        "reproven": True})
                         deadline = time.monotonic() + 15
                         while time.monotonic() < deadline:
-                            if (_proc_absent(state.server_pid)
-                                    or identity_current() != captured):
+                            if observed_gone() is True:
                                 break
-                            time.sleep(0.5)
+                            time.sleep(0.05)
                     except (ProcessLookupError, PermissionError) as exc:
                         events.append({"signal": "SIGKILL",
                                        "pid": state.server_pid,
                                        "error": str(exc)})
-                gone = (_proc_absent(state.server_pid)
-                        or identity_current() != captured)
+                gone = observed_gone()
 
-    if state.proc is not None and state.proc.poll() is None:
+    if (state.proc is not None and state.proc.pid != state.server_pid
+            and state.proc.poll() is None):
         try:
             state.proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
             state.proc.kill()
             state.proc.wait(timeout=10)
+    gone = observed_gone()
     # Descendant sweep re-proves each captured identity before signaling.
     for pid, child_start in descendants:
         if _proc_absent(pid) or _start_time(pid) != child_start:
@@ -944,6 +971,11 @@ def serve_cycle(cycle_dir: Path, models_dir: Path, *, port: int,
         time.sleep(1.0)
         cycle["timings"] = parse_timings(
             state.log_path.read_text(encoding="utf-8", errors="replace"))
+    except Exception as exc:
+        import traceback
+        cycle["error"] = f"{type(exc).__name__}: {exc}"
+        (cycle_dir / "cycle-error.log").write_text(
+            traceback.format_exc(), encoding="utf-8")
     finally:
         cycle["stop"] = stop_server(state)
     return cycle
@@ -958,11 +990,11 @@ def cmd_verify_model(args: argparse.Namespace) -> int:
 def cmd_prove(args: argparse.Namespace) -> int:
     evidence = Path(args.evidence_dir).expanduser()
     evidence.mkdir(parents=True, exist_ok=True)
-    summary: dict = {"engine": {"path": str(ENGINE_PATH),
-                                "sha256_computed": _sha256_file(ENGINE_PATH),
-                                "archive_sha256_pinned": ENGINE_ARCHIVE_SHA256,
-                                "version": ENGINE_VERSION},
-                     "cycles": []}
+    summary: dict = {"engine": _engine_identity(), "cycles": []}
+    if not summary["engine"]["verified"]:
+        (evidence / "summary.json").write_text(json.dumps(summary, indent=2))
+        print(json.dumps({"state": "refused-engine", **summary}, indent=2))
+        return 2
     manifest = verify_model(Path(args.models_dir).expanduser(),
                             deep=not args.skip_deep_verify)
     summary["model_manifest"] = manifest
@@ -1026,8 +1058,9 @@ def cmd_prove(args: argparse.Namespace) -> int:
 # hermes-glm/profile; the runtime state lives under the machine root's
 # native runtimes dir. START seeds the profile ONCE (never rewrites operator
 # or #5 plugin/MCP keys on restart), keeps the stable API key in a 0600 file
-# (never argv), launches under a fresh unique scope, and writes the native
-# supervisor-shaped server.json so native endpoint resolution works. STOP
+# (never argv), launches under a fresh unique scope, and writes a private
+# internal endpoint record for these harnesses. This is NOT native supervisor
+# state: the custom provider uses its explicitly configured endpoint. STOP
 # touches only the manifest-owned PID/unit with nonempty fresh start-time —
 # never a HERMES_HOME-wide sweep (other clients may share this profile).
 
@@ -1118,6 +1151,9 @@ def ops_preflight(models_dir: Path) -> dict:
     digest, and ACTUAL RAM/disk/controllers now (never historical figures).
     No invented memory floor: the cgroup cap bounds the unit; recorded
     headroom documents host capacity."""
+    engine = _engine_identity()
+    if not engine["verified"]:
+        return {"engine": engine}
     mem = {}
     for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
         name, _, rest = line.partition(":")
@@ -1133,12 +1169,16 @@ def ops_preflight(models_dir: Path) -> dict:
             "disk": {"free_bytes": os.statvfs(models_dir).f_bavail
                      * os.statvfs(models_dir).f_frsize},
             "controllers": controllers,
-            "engine_sha256": _sha256_file(ENGINE_PATH),
+            "engine": engine,
             "manifest": verify_model(models_dir, deep=False)}
 
 
 def cmd_ops_start(args: argparse.Namespace) -> int:
     preflight = ops_preflight(DEFAULT_MODELS_DIR)
+    if not preflight["engine"]["verified"]:
+        print(json.dumps({"state": "refused-engine",
+                          "preflight": preflight}, indent=2))
+        return 2
     if not preflight["manifest"]["ok"]:
         print(json.dumps({"state": "refused-manifest",
                           "preflight": preflight}, indent=2))
