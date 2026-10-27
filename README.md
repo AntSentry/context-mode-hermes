@@ -165,6 +165,17 @@ Evidence: [`benchmarks/results/runtime-cli-evidence.tar.gz`](benchmarks/results/
 - `tests/test_lifecycle.py` — real plugin registration on the pinned `PluginContext`/`PluginManager`, real Hermes dispatch seams, real engine subprocesses, assertions against the actual per-project session DB.
 - `tests/test_engine_contract.py`, `tests/test_install_contract.py`, `tests/test_mcp_proxy_contract.py`, `tests/test_native_hermes_contract.py`, `tests/test_commands.py` — engine CLI contract, installer output/config, proxy protocol, native Hermes integration, and slash-command behavior against the real engine.
 
+## Hosted CI
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on a clean GitHub-hosted runner and needs no credentials, model weights or access to the original workstation:
+
+- **`integration`** — the pinned stack above (Hermes v0.22.5 via locked `uv` sync on Python 3.14, Node 22): editable adapter install, nested engine install through the public `context-mode-hermes --install-engine` command, then the full real-engine suite with `CONTEXT_MODE_TEST_BIN` pointed at that nested engine. The run fails if any test is *skipped*, so a missing engine prerequisite can never become a silent green check.
+- **`clean-distribution-smoke`** — builds the wheel from the checkout and installs it into a fresh virtualenv on every supported Python (3.11–3.14). The wheel's own console command installs the locked `context-mode@1.0.169` engine, and [`clean_distribution_smoke.py`](.github/scripts/clean_distribution_smoke.py) then drives the real engine over its public MCP stdio interface from outside the checkout: `ctx_execute` must print a value it computed, `ctx_index` + `ctx_search` must round-trip stored text that an echo of the query cannot satisfy, and `context_mode_hermes` must import from the wheel rather than the source tree. The installed engine version must equal the packaged lock.
+
+Both jobs use only a read-only `contents: read` token; the workflow holds no secrets.
+
+Hosted CI proves packaging and adapter integration behavior only. It runs no model, no benchmark and no hardware-specific measurement: GLM runtime, continuity and benefit evidence is the separate local reporting under [Measured results](#measured-results), and a green pipeline is not a real-model benefit claim. Hosted run links for the published integration branch and its PR are recorded by the maintainer in [issue #8](https://github.com/AntSentry/context-mode-hermes/issues/8).
+
 ## Uninstall / rollback
 
 ```bash
