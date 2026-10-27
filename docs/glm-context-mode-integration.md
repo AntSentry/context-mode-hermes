@@ -5,6 +5,13 @@ its workspace is `/home/a1234/.local/share/hermes-glm/workspace`. The normal
 `~/.hermes` profile is separate. Do not substitute the normal profile in these
 commands or stop gateways by process name.
 
+**Owner-approved delivery priority: setup first.** Complete the reversible
+working setup before the lengthy real-model continuity and paired-benefit
+certification. Tickets [#6](https://github.com/AntSentry/context-mode-hermes/issues/6)
+and [#7](https://github.com/AntSentry/context-mode-hermes/issues/7) remain open
+and explicitly deferred; their prepared branches are retained for resumption.
+This staged handover does not certify a context-mode improvement.
+
 ## Evidence status
 
 The pinned engine and adapter are installed in the selected profile. The real

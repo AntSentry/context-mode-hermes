@@ -678,13 +678,14 @@ def _upgrade_command(ctx: Any, engine: Any) -> Callable[[str], str]:
 _PURGE_USAGE = """Purge context-mode data. Irreversible.
 
 Usage:
-  /ctx-purge session confirm            purge this session's captured events
+  /ctx-purge session confirm            purge this session's captured events AND indexed chunks
   /ctx-purge session <id> confirm       purge an explicit session id (plain string;
                                         Hermes ids are not UUIDs)
   /ctx-purge project confirm            purge project-wide stats and indexed content
 
 Scopes: session or project. The literal word `confirm` is required — without it
-nothing is deleted."""
+nothing is deleted. Purge is not uninstall: use the installer --remove option
+to remove this integration while retaining indexed knowledge."""
 
 
 
@@ -703,9 +704,13 @@ def _purge_command(ctx: Any, engine: Any) -> Callable[[str], str]:
         if scope not in ("session", "project"):
             raise _Usage(f"Unknown scope {scope!r}.\n{_PURGE_USAGE}")
         if not confirmed:
+            contents = ("the selected session's captured events AND indexed chunks"
+                        if scope == "session" else "project-wide stats and indexed content")
             return (
                 f"Purge scope `{scope}` staged, nothing deleted.\n"
-                f"This is irreversible. Re-run as `/ctx-purge {scope} confirm` to delete."
+                f"This irreversibly deletes {contents}.\n"
+                "Purge is not uninstall; installer --remove retains indexed knowledge.\n"
+                f"Re-run as `/ctx-purge {scope} confirm` to delete."
             )
 
         arguments: dict[str, Any] = {"confirm": True, "scope": scope}
