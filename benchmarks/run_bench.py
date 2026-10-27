@@ -33,7 +33,6 @@ import json
 import os
 import random
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -44,6 +43,7 @@ from pathlib import Path
 
 from benchmarks.controlled_provider import (ControlledProvider, RunParams, SERVER_MODEL_CONTEXT,
                                             new_nonce)
+from context_mode_hermes.verify import ProcessLedger, _InterruptFlag, stop_child, sweep_owned
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ENGINE_BIN = Path(os.environ.get("CONTEXT_MODE_TEST_BIN") or shutil.which("context-mode") or "context-mode")
@@ -98,34 +98,33 @@ def build_fixture(target_bytes: int) -> tuple[bytes, int, int]:
                        separators=(",", ":")).encode(), len(records), value_sum)
 
 
-def sweep_strays(root: Path) -> list[dict]:
-    """Kill anything whose command line references the benchmark temp root (MCP
-    server children, engine workers, leftover gateways). This process's own
-    argv never contains the root path."""
-    victims: list[dict] = []
-    try:
-        out = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True,
-                             timeout=15).stdout
-    except Exception:
-        return victims
-    mine = {os.getpid(), os.getppid()}
-    for line in out.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        pid_text, _, cmd_args = line.partition(" ")
-        try:
-            pid = int(pid_text)
-        except ValueError:
-            continue
-        if pid in mine or str(root) not in cmd_args:
-            continue
-        victims.append({"pid": pid, "args": cmd_args[:160]})
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-    return victims
+def sweep_profile(home: Path, ledger: ProcessLedger,
+                  interrupt: _InterruptFlag | None = None) -> list[dict]:
+    """Identity-verified cleanup for ONE explicitly owned arm profile.
+
+    Reuses the verification smoke's ledger machinery: every signal goes to an
+    individually re-verified PID whose own /proc environ carries THIS home as
+    HERMES_HOME (start time still matching), TERM first, bounded KILL only
+    after the grace window. Nothing is ever selected by command line or path
+    prefix — an inspector, editor or foreign-profile process that merely
+    mentions the benchmark temp root is never touched."""
+    if interrupt is None:
+        interrupt = _InterruptFlag()
+    before = len(ledger.strays)
+    ledger.owned_home_marker = str(home)
+    sweep_owned(home, ledger, interrupt)
+    return [dict(entry) for entry in ledger.strays[before:]]
+
+
+def sweep_profiles(homes, ledger: ProcessLedger) -> list[dict]:
+    """Final scoped sweep across every explicitly owned arm profile.
+
+    Uses a fresh, never-tripped interrupt flag so the final cleanup always
+    completes, even when an interruption is why we are unwinding."""
+    killed: list[dict] = []
+    for home in homes:
+        killed.extend(sweep_profile(home, ledger))
+    return killed
 
 
 def rough_tokens(body: dict) -> int | None:
@@ -173,9 +172,10 @@ def profile_summary(home: Path) -> dict:
 def run_arm(provider: ControlledProvider, *, arm: str, workload: str, run_id: str, home: Path,
             workdir: Path, python: Path, logs_dir: Path, timeout_s: int, nonce: str, model: str,
             capture_dir: Path, probe_untrusted_context: bool, fixture_truth: dict,
-            temp_root: Path) -> dict:
+            ledger: ProcessLedger) -> dict:
     key = f"{run_id}.{arm}.{workload}"
     session_id = f"cm-bench-{run_id}-{arm}-{workload}"
+    ledger.owned_home_marker = str(home)  # every signal this arm records is identity-scoped to it
     out_path = logs_dir / f"{key}.child.json"
     provider.register_run(RunParams(
         key=key, arm=arm, workload=workload, model=model, nonce=nonce,
@@ -202,13 +202,15 @@ def run_arm(provider: ControlledProvider, *, arm: str, workload: str, run_id: st
         proc.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         timed_out = True
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
-        proc.wait(timeout=30)
+    finally:
+        # Identity-verified shutdown of THIS arm's own profile: the direct
+        # child and any of its descendants still carrying the arm home as
+        # HERMES_HOME get TERM first, a bounded wait, then KILL — each PID
+        # individually re-verified, never a process-group or cmdline match.
+        if timed_out or proc.poll() is None:
+            stop_child(proc, ledger, exit_timeout=10.0)
+        strays = sweep_profile(home, ledger)
     child_wall = round(time.monotonic() - started, 3)
-    strays = sweep_strays(temp_root)
     child: dict = {}
     if out_path.exists():
         try:
@@ -340,6 +342,8 @@ def main() -> int:
     logs_dir.mkdir(parents=True)
     all_killed: list[dict] = []
     provider: ControlledProvider | None = None
+    homes: dict[str, Path] = {}
+    ledger = ProcessLedger()
     try:
         fixture, count, value_sum = build_fixture(args.fixture_bytes)
         fixture_truth = {"count": count, "sum": value_sum, "bytes": len(fixture)}
@@ -347,7 +351,6 @@ def main() -> int:
         provider = ControlledProvider(fixture, capture_dir)
         provider.start()
 
-        homes: dict[str, Path] = {}
         for arm in arms:
             home = temp_root / f"home-{arm}"
             home.mkdir(parents=True)
@@ -398,7 +401,7 @@ def main() -> int:
                     timeout_s=args.arm_timeout, nonce=new_nonce(),
                     model=f"cm-bench-{workload}", capture_dir=capture_dir,
                     probe_untrusted_context=args.probe_untrusted_context and arm == "plugin",
-                    fixture_truth=fixture_truth, temp_root=temp_root)
+                    fixture_truth=fixture_truth, ledger=ledger)
                 all_killed.extend(cell[arm].get("strays_killed", []))
             if "plugin" in cell and "baseline" in cell:
                 cell["delta_plugin_minus_baseline"] = _delta(cell["plugin"], cell["baseline"])
@@ -415,7 +418,11 @@ def main() -> int:
     finally:
         if provider is not None:
             provider.stop()
-        sweep_strays(temp_root)
+        # Scoped final cleanup: only the explicitly owned arm profiles, each
+        # swept by individually verified PID identity. A fresh interrupt flag
+        # (never tripped) means an interruption cannot abort the cleanup, and
+        # no command-line/path-prefix selection ever happens here.
+        all_killed.extend(sweep_profiles(homes.values(), ledger))
         if not args.keep:
             shutil.rmtree(temp_root, ignore_errors=True)
 
