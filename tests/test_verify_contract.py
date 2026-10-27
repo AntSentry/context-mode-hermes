@@ -131,18 +131,17 @@ FAKE_REPL = textwrap.dedent(
             time.sleep(0.5)
             termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
         print("Hermes Agent 0.22.5 (scripted verification REPL) ready")
+        # A foreign profile may inherit our group; only PID identity proves ownership.
         if os.environ.get("FAKE_DECOY_PIDFILE"):
             decoy = subprocess.Popen(
                 [sys.executable, "-c",
                  "import os, signal, time\\n"
-                 "os.setsid()\\n"
-                 "signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n"
+                 "signal.signal(signal.SIGHUP, signal.SIG_IGN)\\n"
+                 "with open(os.environ['FAKE_DECOY_PIDFILE'], 'w') as f: f.write(str(os.getpid()))\\n"
                  "time.sleep(600)\\n"],
                 cwd="/tmp",
                 env={**os.environ, "HERMES_HOME": os.environ["FAKE_DECOY_HOME"]},
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            with open(os.environ["FAKE_DECOY_PIDFILE"], "w") as fh:
-                fh.write(str(decoy.pid))
         print("❯ ", flush=True)
         while True:
             line = sys.stdin.readline()
@@ -429,7 +428,7 @@ def run_verify(fake_stack: dict, *extra: str, env: dict | None = None) -> Verify
 def test_passing_smoke_end_to_end(fake_stack: dict, mode: str) -> None:
     run = run_verify(fake_stack, "--command-timeout", "8", env={"FAKE_MODE": mode})
 
-    assert run.returncode == 0, run.stderr
+    assert run.returncode == 0, (run.stdout, run.stderr, run.report)
     assert run.status == "pass"
 
     report = run.report

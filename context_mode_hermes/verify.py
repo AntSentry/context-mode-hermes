@@ -323,57 +323,46 @@ class ProcessLedger:
             "verified": bool(env) and env.get("HERMES_HOME") is not None,
         })
 
-    def _record(self, target: int, sig: int, scope: str, proof: dict) -> None:
+    def _record(self, target: int, sig: int, proof: dict) -> None:
         try:
-            if scope == "process-group":
-                os.killpg(target, sig)
-            else:
-                os.kill(target, sig)
+            os.kill(target, sig)
         except (ProcessLookupError, PermissionError) as exc:
             outcome = f"not-delivered ({type(exc).__name__})"
         else:
             outcome = "delivered"
         self.signals.append({
-            "target": target, "scope": scope,
+            "target": target, "scope": "process",
             "signal": signal.Signals(sig).name, "identity": "owned", "outcome": outcome,
             "proof": {k: proof.get(k) for k in ("hermes_home", "cmdline", "starttime")},
             "time": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
         })
 
-    def signal_child_group(self, proc: subprocess.Popen, sig: int) -> None:
-        """Signal the tracked child's whole process group while the handle is live."""
+    def signal_owned_children(self, proc: subprocess.Popen, sig: int) -> None:
+        """A process group is not ownership: descendants can select other profiles."""
         if proc.poll() is not None:
-            return  # reaped handles can never go stale
-        try:
-            pgid = os.getpgid(proc.pid)
-        except ProcessLookupError:
             return
-        if pgid != proc.pid:
-            # Not a group leader (unexpected: we spawn with start_new_session).
-            self._record(proc.pid, sig, "process", {
-                "hermes_home": "tracked-child-handle",
-                "cmdline": _proc_cmdline(proc.pid), "starttime": _proc_starttime(proc.pid)})
-            return
-        self._record(pgid, sig, "process-group", {
-            "hermes_home": "tracked-child-handle (spawned with the owned profile)",
-            "cmdline": _proc_cmdline(proc.pid), "starttime": _proc_starttime(proc.pid)})
+        for proof in owned_hermes_pids(Path(self.owned_home_marker), exclude={os.getpid()}):
+            self.signal_owned_pid(proof["pid"], sig, proof)
 
     def signal_owned_pid(self, pid: int, sig: int, proof: dict) -> None:
         """Signal a swept PID only while its start time still matches the proof."""
         starttime = _proc_starttime(pid)
         if starttime is None or starttime != proof.get("starttime"):
             return  # gone, or starttime missing/unverifiable: no proof, no signal
-        if proof.get("hermes_home") != self.owned_home_marker:
-            return  # proof does not carry this run's owned HERMES_HOME identity
-        self._record(pid, sig, "process", proof)
+        env = _proc_environ(pid)
+        if (proof.get("hermes_home") != self.owned_home_marker
+                or env is None or env.get("HERMES_HOME") != self.owned_home_marker):
+            return
+        self._record(pid, sig, proof)
 
 
 def run_bounded(cmd: list[str], *, env: dict[str, str], cwd: Path,
-                timeout: float, interrupt: _InterruptFlag) -> tuple[str, str]:
+                timeout: float, interrupt: _InterruptFlag,
+                ledger: ProcessLedger) -> tuple[str, str]:
     """Run a subprocess with bounded polling so a received signal never waits
-    out the full communicate() timeout. This is app control over processes the
-    smoke itself spawned; on interruption or timeout the child group is killed
-    and reaped before propagating."""
+    out the full communicate() timeout. Cleanup signals only individually
+    profile-verified processes, never their entire inherited process group.
+    The tracked child is reaped before propagating."""
     proc = subprocess.Popen(cmd, env=env, cwd=str(cwd),
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, start_new_session=True)
@@ -388,10 +377,7 @@ def run_bounded(cmd: list[str], *, env: dict[str, str], cwd: Path,
             time.sleep(0.25)
         return proc.communicate(timeout=10)
     except BaseException:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except OSError:
-            proc.kill()
+        ledger.signal_owned_children(proc, signal.SIGKILL)
         try:
             proc.communicate(timeout=10)
         except subprocess.SubprocessError:
@@ -415,13 +401,13 @@ def _communicate_bounded(proc: subprocess.Popen, timeout: float,
 
 
 def stop_child(proc: subprocess.Popen, ledger: ProcessLedger, exit_timeout: float) -> None:
-    """Bounded shutdown of an owned child: group TERM, wait, group KILL, reap."""
+    """Bounded shutdown: identity-verified PID TERM, wait, PID KILL, reap."""
     if proc.poll() is None:
-        ledger.signal_child_group(proc, signal.SIGTERM)
+        ledger.signal_owned_children(proc, signal.SIGTERM)
         try:
             proc.wait(timeout=exit_timeout)
         except subprocess.TimeoutExpired:
-            ledger.signal_child_group(proc, signal.SIGKILL)
+            ledger.signal_owned_children(proc, signal.SIGKILL)
             try:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
@@ -704,7 +690,7 @@ class Smoke:
         try:
             stdout, stderr = run_bounded([str(hermes), "--version"],
                                          env=env, cwd=self.owned_home,
-                                         timeout=120, interrupt=self.interrupt)
+                                         timeout=120, interrupt=self.interrupt, ledger=self.ledger)
         except subprocess.TimeoutExpired:
             raise Refused(f"{hermes} --version did not answer within 120s") from None
         except (OSError, subprocess.SubprocessError) as exc:
