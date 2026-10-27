@@ -11,6 +11,7 @@ namespace was verified through the native consumer as a throwaway probe.
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -24,6 +25,8 @@ def owned_engine_artifact(tmp_path, monkeypatch):
     artifact = tmp_path / "llama-server"
     artifact.write_bytes(b"controlled proof-gate artifact\n")
     monkeypatch.setattr(glm_local, "ENGINE_PATH", artifact)
+    monkeypatch.setattr(glm_local, "ENGINE_SHA256",
+                        hashlib.sha256(artifact.read_bytes()).hexdigest())
 
 
 def test_parse_llama_timings() -> None:
@@ -195,3 +198,107 @@ def test_prove_exit_code_fails_on_omitted_required_proof_and_failed_stop(
         toolproof={"accepted": True, "no_owned_survivors": True},
         stop={"pid_gone": False,
               "unit_state_after_stop": "inactive"})) == 1
+
+
+def test_prove_refuses_substituted_engine_before_model_validation(tmp_path, monkeypatch):
+    artifact = tmp_path / "substituted-engine"
+    artifact.write_bytes(b"not the approved engine")
+    monkeypatch.setattr(glm_local, "ENGINE_PATH", artifact)
+    evidence = tmp_path / "evidence"
+
+    result = glm_local.main([
+        "prove", "--models-dir", str(tmp_path / "absent-model"),
+        "--evidence-dir", str(evidence),
+    ])
+
+    report = json.loads((evidence / "summary.json").read_text())
+    assert result == 2
+    assert report["engine"]["verified"] is False
+    assert report["engine"]["sha256_expected"] == glm_local.ENGINE_SHA256
+    assert report["engine"]["sha256_computed"] != glm_local.ENGINE_SHA256
+    assert "model_manifest" not in report, "A different engine must be refused first"
+
+
+def test_start_refuses_substituted_engine_without_touching_runtime_state(
+        tmp_path, monkeypatch, capsys):
+    artifact = tmp_path / "substituted-engine"
+    artifact.write_bytes(b"not the approved engine")
+    monkeypatch.setattr(glm_local, "ENGINE_PATH", artifact)
+    monkeypatch.setattr(glm_local, "DEFAULT_MODELS_DIR", tmp_path / "absent-model")
+
+    assert glm_local.main(["start"]) == 2
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["state"] == "refused-engine"
+    assert report["preflight"]["engine"]["verified"] is False
+
+
+@pytest.fixture
+def controlled_server_process(tmp_path):
+    import subprocess
+    import sys
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; print('READY', flush=True); time.sleep(120)"],
+        stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline() == "READY\n"
+        state = glm_local.ServerState(
+            proc=child, server_pid=child.pid,
+            start_time=glm_local._start_time(child.pid), cgroup="",
+            port=0, api_key="", log_path=tmp_path / "server.log",
+            prompts_dir=tmp_path / "prompts", unit="controlled-process-fixture")
+        yield child, state
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=10)
+        child.stdout.close()
+
+
+def test_direct_child_shutdown_reaps_exit_before_reporting_cleanup(
+        controlled_server_process):
+    child, state = controlled_server_process
+
+    report = glm_local.stop_server(
+        state, term_timeout_s=0.1, scope_settle_timeout_s=0)
+
+    assert child.poll() is not None
+    assert report["pid_gone"] is True
+    assert [event["signal"] for event in report["events"]] == ["SIGTERM"]
+
+
+def test_unreadable_identity_after_term_is_not_reported_as_gone(
+        controlled_server_process, monkeypatch):
+    import os
+    import signal
+
+    child, state = controlled_server_process
+    state.proc = None
+    original_start_time = glm_local._start_time
+    original_kill = os.kill
+    term_sent = False
+
+    def unreadable_after_term(pid):
+        if pid == child.pid and term_sent:
+            return None
+        return original_start_time(pid)
+
+    def stop_before_term(pid, sig):
+        nonlocal term_sent
+        if pid == child.pid and sig == signal.SIGTERM:
+            # A real stopped process remains alive while its identity read
+            # becomes unavailable. Do not let normal TERM exit mask the case.
+            original_kill(pid, signal.SIGSTOP)
+            term_sent = True
+        return original_kill(pid, sig)
+
+    monkeypatch.setattr(glm_local, "_start_time", unreadable_after_term)
+    monkeypatch.setattr(os, "kill", stop_before_term)
+
+    report = glm_local.stop_server(
+        state, term_timeout_s=0.05, scope_settle_timeout_s=0)
+
+    assert child.poll() is None
+    assert report["pid_gone"] is None, "Unavailable identity is not proof of exit"
+    assert [event["signal"] for event in report["events"]] == ["SIGTERM"]

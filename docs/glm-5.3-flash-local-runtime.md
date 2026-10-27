@@ -5,7 +5,8 @@ Operator/reproduction guide for bringing up the exact GLM-5.3-Flash
 `UD-IQ4_XS`, 5 shards, **156,822,111,200 bytes** total, every shard
 SHA256-verified against the HF tree API at that pinned revision) on
 llama.cpp **b11669** CPU (`0.7.0-dev b11669 commit 620d2225c`,
-`llama-server` SHA256 `cf07c1c112d709bd67e522017471de57ed0ec8bea031d732c5422351c07f65ac`)
+`llama-server` SHA256 `3f2b53013c2eb596c8aca87e4740240a41f95bcebf72e61084d6d5ba0db761cc`;
+release-archive SHA256 `cf07c1c112d709bd67e522017471de57ed0ec8bea031d732c5422351c07f65ac`)
 under the pinned Hermes v0.22.5 checkout — then proving real tool-calling
 through native Hermes against it.
 
@@ -227,3 +228,28 @@ The proof-command exit-code regressions use an owned temporary artifact for
 provenance hashing and controlled cycle outcomes. They do not require this
 machine's llama-server path or weights on a CI runner. Actual GLM execution is
 evidenced by the live transcripts above, not those isolated gate tests.
+
+### Runtime review corrections and evidence provenance
+
+Current proof and operator-start commands refuse a binary whose digest differs
+from the approved engine pin; the shared launch builder enforces it too. Failed
+generation cycles retain their error and verified shutdown report together.
+Direct children are reaped before exit classification. If identity becomes
+unreadable while a PID still exists, `pid_gone` remains unknown (`null`), not
+successful cleanup. The retained controlled-HTTP diagnostic exercises failed
+cycle/error retention and physical child shutdown without model inference.
+
+The earlier archived serve cycles and adopted warm toolflow used the original
+reused `hermes-glm-resource-probe` scope and a per-run key on argv. They predate
+the unique-scope/key-file launcher. Retired keys are redacted in the public
+bundle; the later independent operator smoke exercised the current launcher.
+Do not attribute current flags retrospectively to those earlier runs.
+
+Public evidence: `benchmarks/results/glm-local-runtime-evidence.tar.gz`.
+Its detached `benchmarks/results/glm-local-runtime-evidence.review.json` records
+the final archive digest and publication scan. The bundle intentionally retains
+the failed review of the **earlier** archive `cdbc9cf10ea8c4963b0b44634451d31ba594c1ae536a20637cda876a98984bd0`;
+that historical rejection is not the verdict on the final bundle. A provenance
+correction in the published summary distinguishes its originally mislabeled
+archive digest from the binary digest. Unredacted raw originals remain local
+and unchanged.
