@@ -68,7 +68,7 @@ What the installer does:
 
 | Hermes hook | Bridge behavior |
 |---|---|
-| `pre_tool_call` | Routed tools (`terminal`, `read_file`, `search_files`, `web_extract`) → engine `pretooluse`; deny→block, ask→approve, `updatedInput`→modify. Every `ctx_*` call gets the trusted `_hermes_context` injected (LLM-supplied values are overwritten). Admin tools (`ctx_purge`/`ctx_upgrade`/`ctx_insight`) are operator-only and blocked for model-side calls. |
+| `pre_tool_call` | Routed tools (`terminal`, `read_file`, `search_files`, `web_extract`) → engine `pretooluse`; deny→block, ask→approve, `updatedInput`→modify. `ctx_*` calls fail closed on ask (or an engine-check error): Hermes' approval path forwards the RAW arguments when a call is approved — plugin args are only merged for `modify` dispatches — and the proxy anchors per-session storage on `_hermes_context`, so our MCP tools only ever proceed through the bridge's identity-modify. Every proceeding `ctx_*` call gets the trusted `_hermes_context` injected (LLM-supplied values are overwritten). Admin tools (`ctx_purge`/`ctx_upgrade`/`ctx_insight`) are operator-only and blocked for model-side calls. |
 | `post_tool_call` | Captured tools → engine `posttooluse` (per-project session memory). |
 | `transform_tool_result` | Appends deferred PreToolUse guidance to the tool result. |
 | `pre_llm_call` | `sessionstart` injection once per boundary (startup / resume / compact); `userpromptsubmit` once per assistant turn (delegated turns excluded). |
@@ -78,14 +78,13 @@ What the installer does:
 
 Hermes' native context compressor is left completely in charge of compaction itself — the bridge only reacts to committed compactions.
 
-**MCP proxy** (`context_mode_hermes/mcp_proxy.py`) — Hermes launches the proxy as its `context-mode` stdio MCP server. The proxy augments the engine's tool schemas with the trusted `_hermes_context` property and routes each `tools/call` to a per-session engine worker subprocess keyed by `(session_id, project_dir)`, in a bounded LRU pool (default 4 workers). Path-like arguments are anchored to the session's live cwd before forwarding.
+**MCP proxy** (`context_mode_hermes/mcp_proxy.py`) — Hermes launches the proxy as its `context-mode` stdio MCP server. The proxy augments the engine's tool schemas with the trusted `_hermes_context` property and routes each `tools/call` to a per-session engine worker subprocess keyed by `(session_id, project_dir)`, in a bounded LRU pool (default 4 workers). Path-like arguments are anchored to the session's live cwd before forwarding. While serving, the proxy publishes the profile's MCP readiness sentinel (upstream's `context-mode-mcp-ready-<pid>` convention) into the profile-owned sentinel directory, using upstream's own PID-liveness protocol — nothing is reimplemented.
 
 **cwd anchor** — the first workspace a session uses is recorded atomically under `<home>/context-mode-host/session-roots/`; later `cd`s keep the live cwd for execution but never move the conversation's captured memory to a different database.
 
-**Isolation** — every engine subprocess runs with foreign client identifiers stripped (`CLAUDE_*`, `PI_*`, `OMP_*`, `CONTEXT_MODE_PLATFORM`, …) and a profile-local `CLAUDE_CONFIG_DIR`/`XDG_CONFIG_HOME` under `<home>/context-mode-host`, so the engine cannot pick up another agent's configuration. Redirect-shaped denies are only issued when this Hermes process itself reports the `context-mode` MCP server as available; security-policy denies never depend on MCP availability.
+**Isolation** — every engine-spawned process (hook CLI, MCP workers) runs with ambient client identifiers scrubbed (`CLAUDE_*`, `PI_*`, `OMP_*`, `CONTEXT_MODE_PLATFORM`, `CONTEXT_MODE_BIN`) and profile-local `CLAUDE_CONFIG_DIR`/`XDG_CONFIG_HOME` under `<home>/context-mode-host`, plus `CONTEXT_MODE_MCP_SENTINEL_DIR` pointing at the profile-owned `<home>/context-mode-host/mcp-sentinels`. Upstream's readiness oracle (`hooks/core/mcp-ready.mjs`) therefore scans only this profile's directory — a foreign agent's machine-global `/tmp/context-mode-mcp-ready-*` server can never decide this profile's redirect behavior, and a fresh host behaves identically to a warm one. Redirect-shaped decisions additionally require the plugin's own Hermes MCP server (Hermes-scoped status: connected/lazy); security-policy blocks never depend on MCP availability. Readiness is always real: no test greens on a stubbed or foreign server.
 
-**Fail-open by design** — hooks only advise; every hook failure is swallowed (logged as `[context-mode] …`) so a bridge problem can never veto a tool call or kill a session. Hermes' own approval/trust controls remain authoritative.
-
+**Fail-open by design** — hooks only advise; every hook failure is swallowed (logged as `[context-mode] …`) so a bridge problem can never veto a tool call or kill a session. Hermes' own approval/trust controls remain authoritative. The one carve-out: our own `ctx_*` MCP tools fail closed when the engine check errors or asks for approval — the approval path would forward raw model arguments (see `pre_tool_call` above).
 ## Storage layout
 
 ```
@@ -115,7 +114,7 @@ Use these commands in the interactive CLI (`hermes --cli`). The verified `hermes
 
 - **`ctx_execute` is not a security sandbox.** Code runs as the user on the host with full user access; the engine bounds what *enters the conversation*, never what the code can do. Treat it as output hygiene, not containment.
 - All bridge hooks are advisory and fail-open (see above); blocking decisions come from the engine's routing rules, and Hermes' approvals remain the gate for anything dangerous.
-- Session identity (`_hermes_context`) is bridge-owned and injected over any model-supplied value; MCP calls carry it invisibly and the proxy strips it before the engine sees the arguments.
+- Session identity (`_hermes_context`) is bridge-owned and injected over any model-supplied value on the only path that can dispatch (`action: modify`); Hermes' approval path forwards raw arguments, so `ctx_*` calls never rely on it — they fail closed on ask and on engine-check errors instead. MCP calls carry the identity invisibly and the proxy strips it before the engine sees the arguments.
 - Admin operations (purge/upgrade/insight) are operator-only via slash commands.
 
 ## Measured results

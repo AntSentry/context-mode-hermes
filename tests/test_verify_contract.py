@@ -488,6 +488,9 @@ def test_refuses_unpinned_hermes(fake_stack: dict) -> None:
     assert run.report["checks"]["hermes_pin"]["ok"] is False
     assert run.report["owned_home"]["path"] is not None
     assert run.report["owned_home"]["removed"] is True
+    assert run.report["provider"]["inference_attempts"] == 0, (
+        "refused runs keep the same provider summary shape as completed runs")
+    assert run.report["provider"]["base_url"] is None
     assert not (run.evidence_dir / "provider").exists()
 
 
@@ -598,5 +601,6 @@ def test_ambient_hermes_home_never_reaches_the_child(fake_stack: dict) -> None:
     for proof in proofs:
         assert proof["hermes_home"] == run.report["owned_home"]["path"]
         assert proof["hermes_home"] != str(fake_stack["default_home"])
-    assert "HERMES_HOME" in run.report["env"]["scrubbed"]
+    assert "CONTEXT_MODE_MCP_SENTINEL_DIR" in run.report["env"]["scrubbed"], (
+        "an ambient sentinel dir must never reach a smoke child")
     assert (fake_stack["default_home"] / "config.yaml").read_text(encoding="utf-8") == "model: untouched\n"

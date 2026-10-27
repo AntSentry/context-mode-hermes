@@ -34,6 +34,7 @@ import signal
 import sys
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -53,6 +54,40 @@ START_TIMEOUT = 60.0
 CLOSE_TIMEOUT = 5.0
 SHELL_CWD_TOOLS = frozenset({"ctx_execute", "ctx_batch_execute"})
 PATH_ARGUMENT_TOOLS = frozenset({"ctx_index", "ctx_execute_file"})
+
+SENTINEL_PREFIX = "context-mode-mcp-ready-"
+
+
+def _publish_sentinel(engine: Engine) -> Path | None:
+    """Publish this profile server's readiness sentinel (upstream convention).
+
+    The pinned engine's hooks decide redirect-vs-passthrough by scanning
+    ``CONTEXT_MODE_MCP_SENTINEL_DIR`` for ``context-mode-mcp-ready-<pid>``
+    files and probing the PID (hooks/core/mcp-ready.mjs). This proxy IS the
+    profile's live MCP server, so it publishes its own PID in the
+    profile-owned dir — never machine-global /tmp, which foreign agents also
+    write.
+    """
+    directory = engine.environment().get("CONTEXT_MODE_MCP_SENTINEL_DIR")
+    if not directory:
+        return None
+    try:
+        path = Path(directory) / f"{SENTINEL_PREFIX}{os.getpid()}"
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.write_text(str(os.getpid()), encoding="utf-8")
+        return path
+    except OSError:
+        return None
+
+
+def _retract_sentinel(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        if path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            path.unlink()
+    except OSError:
+        pass
 
 
 class ProxyError(RuntimeError):
@@ -429,6 +464,15 @@ def _engine_version(engine: Engine) -> str:
 
 
 async def serve(engine: Engine, max_workers: int) -> None:
+    """Serve stdio MCP and keep this profile's readiness sentinel published."""
+    sentinel = _publish_sentinel(engine)
+    try:
+        await _serve_until_eof(engine, max_workers)
+    finally:
+        _retract_sentinel(sentinel)
+
+
+async def _serve_until_eof(engine: Engine, max_workers: int) -> None:
     async with anyio.create_task_group() as group:
         group.start_soon(_exit_on_signal, group)
         proxy = McpProxy(engine, max_workers, group)

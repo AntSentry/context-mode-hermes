@@ -60,3 +60,23 @@ def test_session_decisions_survive_working_directory_changes_and_restart(monkeyp
         "session_id": "directory-change", "cwd": str(subdir), "source": "compact",
     })
     assert "REGION-CD-67512" in json.dumps(restored)
+
+
+def test_environment_scopes_mcp_readiness_to_the_profile(monkeypatch, tmp_path):
+    """Engine-spawned processes (hook CLI, MCP workers) must resolve MCP
+    readiness from THIS profile's sentinel dir — upstream mcp-ready.mjs scans
+    it via CONTEXT_MODE_MCP_SENTINEL_DIR and would otherwise fall back to
+    machine-global /tmp, letting a foreign agent's server decide this
+    profile's redirect behavior."""
+    from pathlib import Path
+
+    monkeypatch.setenv("CONTEXT_MODE_MCP_SENTINEL_DIR", str(tmp_path / "foreign-sentinels"))
+    engine = engine_for(monkeypatch, tmp_path / "profile")
+    env = engine.environment()
+
+    sentinel_dir = Path(env["CONTEXT_MODE_MCP_SENTINEL_DIR"])
+    host_root = tmp_path / "profile" / "context-mode-host"
+    assert sentinel_dir == host_root / "mcp-sentinels", (
+        "the ambient override must never leak into a profile's readiness oracle")
+    assert sentinel_dir.is_dir(), "the owned location must exist for producers and scanners"
+    assert engine.sentinel_root == sentinel_dir

@@ -44,3 +44,6 @@ def test_install_keeps_existing_model_plugins_and_other_profile(tmp_path, monkey
     assert configured["mcp_servers"]["existing"] == original["mcp_servers"]["existing"]
     assert (other / "config.yaml").read_text(encoding="utf-8") == "model: untouched\n"
     assert configured["mcp_servers"]["context-mode"]["env"]["CONTEXT_MODE_DIR"] == str(home / "context-mode")
+    assert configured["mcp_servers"]["context-mode"]["env"]["CONTEXT_MODE_MCP_SENTINEL_DIR"] == (
+        str(home / "context-mode-host" / "mcp-sentinels")), (
+        "the profile's MCP server must publish readiness to the profile-owned sentinel dir")
