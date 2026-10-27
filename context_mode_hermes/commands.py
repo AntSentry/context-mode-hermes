@@ -706,11 +706,12 @@ def _purge_command(ctx: Any, engine: Any) -> Callable[[str], str]:
         if not confirmed:
             contents = ("the selected session's captured events AND indexed chunks"
                         if scope == "session" else "project-wide stats and indexed content")
+            confirmation = shlex.join([scope, *operands, "confirm"])
             return (
                 f"Purge scope `{scope}` staged, nothing deleted.\n"
                 f"This irreversibly deletes {contents}.\n"
                 "Purge is not uninstall; installer --remove retains indexed knowledge.\n"
-                f"Re-run as `/ctx-purge {scope} confirm` to delete."
+                f"Re-run as `/ctx-purge {confirmation}` to delete."
             )
 
         arguments: dict[str, Any] = {"confirm": True, "scope": scope}
