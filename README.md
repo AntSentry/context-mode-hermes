@@ -16,10 +16,12 @@ What this integration does:
 What it does **not** do:
 
 - **It is not a token-saving optimization.** The controlled benchmark below measured a net *increase* in wire bytes and rough token estimates with the plugin enabled, on both workloads. Do not deploy it always-on expecting context-window savings; native Hermes already spills oversized terminal output to files on its own.
-- **The context-mode integration has not yet passed real-model acceptance.** A separate native-Hermes baseline now runs the exact local GLM-5.3-Flash artifact and has completed a tool-dependent conversation. This does not validate context-mode continuity or establish a quality, speed or context-cost benefit.
+- **The complete context-mode real-model acceptance has not yet passed.** The exact local GLM-5.3-Flash has completed both a native tool baseline and a context-mode search workflow with an independently verified final answer. Working-profile removal/native-use/re-enable, context continuity and paired net benefit remain separate gates; a completed search does not establish a quality, speed or context-cost improvement.
 - **It is not a security sandbox.** See [Security & isolation](#security--isolation).
 
 **Local GLM baseline on the 5040:** [artifact, launch, stop and measured runtime evidence](docs/glm-5.3-flash-local-runtime.md). The verified warm-cache tool turn took about 98 minutes; it read about 1.70 TB during the window. Slow disk-backed execution is demonstrated, not practical responsiveness or a context-mode improvement.
+
+**Working-profile integration:** [exact enable, launch, removal and gateway-restart procedures](docs/glm-context-mode-integration.md), with the retained failed-controller record and current real-GLM acceptance status.
 
 ## Compatibility
 
