@@ -38,6 +38,7 @@ class Engine:
         self.storage_root = Path(configured) if configured else self.home / "context-mode"
         self.storage_root = self.storage_root.resolve()
         self.host_root = self.home / "context-mode-host"
+        self.sentinel_root = self.host_root / "mcp-sentinels"
         selected = binary or self._env.get("CONTEXT_MODE_BIN", "").strip()
         known = self.home / "context-mode-runtime" / "node_modules" / ".bin" / "context-mode"
         self.binary = selected or (str(known) if known.is_file() else None) or (
@@ -77,6 +78,16 @@ class Engine:
             "CONTEXT_MODE_PLATFORM": "claude-code",
             "CLAUDE_CODE_ENTRYPOINT": "hermes-context-mode-bridge",
         })
+        # Upstream's isMCPReady() (hooks/core/mcp-ready.mjs) scans this dir when
+        # set, otherwise machine-global /tmp — which foreign agents also write.
+        # Every process spawned with this env (hook CLI and MCP workers) then
+        # sees THIS profile's readiness only. Best-effort: on an unwritable
+        # home, readiness fails closed and spawning still proceeds.
+        try:
+            self.sentinel_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError:
+            pass
+        env["CONTEXT_MODE_MCP_SENTINEL_DIR"] = str(self.sentinel_root)
         return env
 
     def context(self, session_id: str, cwd: str) -> dict[str, str]:

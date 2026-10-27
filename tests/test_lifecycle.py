@@ -24,10 +24,12 @@ Requirements (skip otherwise):
   from a nested npm install (CI installs it with ``context-mode-hermes
   --install-engine``, which uses the packaged package-lock.json).
 
-The only stubbed seam is ``bridge._mcp_ready`` (host state): whether THIS Hermes
-process can call its ``context-mode`` MCP server depends on machine-global
-state in the real host, not on this profile; tests pin it explicitly instead of
-letting ambient host state decide block-vs-suppress outcomes.
+MCP readiness is REAL everywhere — no stubbed seam. Engine hooks decide
+redirect-vs-passthrough by scanning the profile-owned sentinel dir
+(``CONTEXT_MODE_MCP_SENTINEL_DIR``, created under the profile's host dir), and
+the bridge asks Hermes' own cached MCP status. Tests that need a ready profile
+start the profile's real MCP server through Hermes' native discovery, so a
+foreign agent's machine-global /tmp sentinel can never mask a fresh host.
 """
 
 from __future__ import annotations
@@ -36,6 +38,10 @@ import json
 import os
 import sqlite3
 import uuid
+import subprocess
+import sys
+import textwrap
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -90,11 +96,15 @@ def _write_plugin_config(cm, *, engine_binary=None, storage_dir=None):
 
 @pytest.fixture
 def plugin(cm, monkeypatch):
-    """A fully configured profile: real installer config, real register(ctx)."""
+    """A fully configured profile: real installer config, real register(ctx).
+
+    The profile's MCP server is NOT started here — this is the honest cold
+    state every fresh host begins in (no owned sentinel, no connection)."""
     try:
         import hermes_cli.plugins as hp
     except ImportError as exc:
         pytest.skip(f"hermes_cli not importable (requires pinned Hermes v0.22.5): {exc}")
+    pytest.importorskip("mcp")
     from context_mode_hermes.install import configure
 
     binary = _pinned_engine()
@@ -107,12 +117,84 @@ def plugin(cm, monkeypatch):
     manager.discover_and_load()
 
     bridge = manager._hooks["pre_tool_call"][0].__self__  # the registered ContextModeBridge
-    monkeypatch.setattr(bridge, "_mcp_ready", lambda: True)
     cm.store = Path(bridge._engine.storage_root)
     yield SimpleNamespace(
         manager=manager, cm=cm,
         bridge=bridge, engine=bridge._engine,
     )
+
+
+def _sentinel_dir(cm) -> Path:
+    return cm.host / "mcp-sentinels"
+
+
+def _await_profile_sentinel(cm, timeout: float = 60.0) -> None:
+    """Wait until the profile's own MCP server has published its readiness
+    sentinel in the profile-owned dir (upstream mcp-ready.mjs convention)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if any(_sentinel_dir(cm).glob("context-mode-mcp-ready-*")):
+            return
+        time.sleep(0.05)
+    raise AssertionError(
+        f"the profile's MCP server never published a sentinel in {_sentinel_dir(cm)}")
+
+
+@pytest.fixture
+def live_plugin(plugin):
+    """Plugin plus the profile's own MCP server, started through Hermes'
+    native server startup (``register_mcp_servers`` — the same public seam
+    ``hermes chat`` uses): the bridge's oracle (Hermes' cached MCP status)
+    and the engine hooks' sentinel scan both see the REAL server — readiness
+    is never stubbed."""
+    from hermes_cli.config import load_config
+    from tools import mcp_tool_lifecycle
+    from tools.mcp_tool_discovery import register_mcp_servers
+
+    try:
+        register_mcp_servers(load_config()["mcp_servers"])
+        _await_profile_sentinel(plugin.cm)
+        yield plugin
+    finally:
+        mcp_tool_lifecycle.shutdown_mcp_servers()
+
+
+_NATIVE_SERVER_CHILD = textwrap.dedent("""
+    import signal, sys, time
+
+    from hermes_cli.config import load_config
+    from tools import mcp_tool_lifecycle
+    from tools.mcp_tool_discovery import register_mcp_servers
+
+    register_mcp_servers(load_config()["mcp_servers"])  # real handshake: initialize + tools/list
+    print("NATIVE-READY", flush=True)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    try:
+        time.sleep(600)
+    finally:
+        mcp_tool_lifecycle.shutdown_mcp_servers()
+""")
+
+
+def _spawn_native_profile_server(cm):
+    """Hermes' own native MCP startup, run in a helper process against the
+    profile: register_mcp_servers performs the real handshake (initialize +
+    tools/list), so the proxy retains its genuine bootstrap worker and
+    publishes the profile sentinel — while THIS process's Hermes registry
+    stays cold. The honest engine-ready / Hermes-cold cross-oracle case."""
+    env = {**os.environ, "HERMES_HOME": str(cm.home)}
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _NATIVE_SERVER_CHILD], env=env,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True,
+        cwd=str(Path(__file__).resolve().parent.parent),
+    )
+    first = proc.stdout.readline().strip()
+    if first != "NATIVE-READY":
+        proc.terminate()
+        detail = proc.stderr.read()[-2000:] if proc.stderr else ""
+        raise AssertionError(f"native profile server failed to start: {first!r} {detail}")
+    return proc
 
 
 def _dispatch_pre(**kwargs):
@@ -183,8 +265,9 @@ def test_unconfigured_profile_never_routes_or_captures(cm, monkeypatch):
 
 # ─── PreToolUse routing (decisions, not wording) ───────────────────────────────
 
-def test_terminal_stdout_flood_is_blocked(plugin):
-    """curl without file output is denied."""
+def test_terminal_stdout_flood_is_blocked(live_plugin):
+    """With the profile's own server live (real sentinel, real status), curl
+    without file output is denied."""
     block, modified = _dispatch_pre(
         tool_name="terminal",
         args={"command": "curl https://example.com/huge"},
@@ -194,8 +277,26 @@ def test_terminal_stdout_flood_is_blocked(plugin):
     assert modified is None
 
 
-def test_silent_file_output_and_bounded_commands_pass(plugin):
-    """Silent curl -o and structurally bounded commands are not blocked."""
+def test_fresh_profile_passes_unredirected_commands_without_any_server(plugin):
+    """Fresh-host cold start: the profile's server has never run, so its owned
+    sentinel dir is empty and the engine's mcpRedirect guard passes commands
+    through instead of denying them. This is the deterministic fresh-host
+    truth — a foreign machine-global /tmp sentinel cannot mask it."""
+    assert not list(_sentinel_dir(plugin.cm).glob("context-mode-mcp-ready-*"))
+    for tool_name, args in (
+        ("terminal", {"command": "curl https://example.com/huge"}),
+        ("web_extract", {"urls": ["https://example.com/article"]}),
+    ):
+        block, _ = _dispatch_pre(
+            tool_name=tool_name, args=args,
+            session_id=_sid(), task_id="t", tool_call_id="c", turn_id="u", api_request_id="",
+        )
+        assert block is None, f"{tool_name} must pass through on a fresh host"
+
+
+def test_silent_file_output_and_bounded_commands_pass(live_plugin):
+    """Silent curl -o and structurally bounded commands are not blocked even
+    with the profile's server live."""
     for command in ("curl -s -o /tmp/page.html https://example.com/x", "pwd", "git status"):
         block, _ = _dispatch_pre(
             tool_name="terminal", args={"command": command},
@@ -204,7 +305,7 @@ def test_silent_file_output_and_bounded_commands_pass(plugin):
         assert block is None, f"{command!r} must pass"
 
 
-def test_web_extract_is_denied(plugin):
+def test_web_extract_is_denied(live_plugin):
     """web_extract (urls list) maps to WebFetch and is denied."""
     block, _ = _dispatch_pre(
         tool_name="web_extract", args={"urls": ["https://example.com/article"]},
@@ -230,8 +331,15 @@ def test_admin_mcp_tools_are_operator_only(plugin):
     assert block is None
 
 
-def test_security_policy_deny_survives_mcp_unready_while_redirects_suppress(plugin, monkeypatch):
-    """Unready Hermes MCP suppresses redirects, never the security policy gate."""
+def test_security_policy_deny_survives_mcp_unready_while_redirects_suppress(plugin):
+    """The real cross-oracle mismatch: the profile's server is ALIVE (the
+    engine hooks see its owned sentinel, so redirect-shaped denies are
+    emitted) while THIS Hermes process has not connected it (Hermes' cached
+    status is not ready) → redirect blocks are suppressed; the security-policy
+    gate still blocks. No readiness is stubbed in either direction."""
+    from tools import mcp_tool_lifecycle
+
+    mcp_tool_lifecycle.shutdown_mcp_servers()  # this process stays honestly cold
     host = plugin.cm.host
     host.mkdir(parents=True, exist_ok=True)
     (host / "settings.json").write_text(
@@ -240,19 +348,132 @@ def test_security_policy_deny_survives_mcp_unready_while_redirects_suppress(plug
         # here can only come from the security policy gate.
         json.dumps({"permissions": {"deny": ["Bash(git status:*)"]}}), encoding="utf-8"
     )
-    monkeypatch.setattr(plugin.bridge, "_mcp_ready", lambda: False)
+    server = _spawn_native_profile_server(plugin.cm)
+    try:
+        _await_profile_sentinel(plugin.cm)
+        assert not plugin.bridge._mcp_ready(), "Hermes' own status must still be cold"
+        block, _ = _dispatch_pre(
+            tool_name="terminal", args={"command": "git status"},
+            session_id=_sid(), task_id="t", tool_call_id="c", turn_id="u", api_request_id="",
+        )
+        assert block, "security-policy deny must be enforced with this process's MCP down"
+        # Redirect flavor (points the model at the ctx_* MCP tools): suppressed
+        # when this Hermes process cannot actually call them.
+        block2, _ = _dispatch_pre(
+            tool_name="web_extract", args={"urls": ["https://example.com/huge"]},
+            session_id=_sid(), task_id="t", tool_call_id="c2", turn_id="u2", api_request_id="",
+        )
+        assert block2 is None, "redirect-shaped blocks are suppressed when MCP is down"
+    finally:
+        server.terminate()
+        try:
+            server.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=5)
+
+
+def test_own_ctx_ask_executes_under_trusted_identity_after_human_approval(plugin, monkeypatch):
+    """Engine 'ask' on our MCP tools escalates to the NATIVE human-approval
+    gate — not a bridge-side block — and the human-approved call EXECUTES with
+    the bridge-owned _hermes_context.
+
+    Hermes aggregates every pre_tool_call callback: plugin args merge only
+    from action=modify results, and the accumulated args ride the approve
+    directive (hermes_cli.plugins). The bridge's mandatory identity callback
+    therefore stamps the trusted identity as a modify, so approval can never
+    forward the LLM-forged metadata the proxy would otherwise anchor storage
+    on. The human decision is driven through the REAL approval gate: the
+    session allowlist (the gate's own '[a]lways' store, seeded via
+    tools.approval.approve_session) approves the exact plugin rule."""
+    from tools.approval import approve_session
+    from tools.approval_context import get_current_session_key
+    import tools.approval as approval_state
+
+    def ask(_event, _payload):
+        return {"hookSpecificOutput": {"permissionDecision": "ask",
+                                       "permissionDecisionReason": "needs confirmation"}}
+
+    monkeypatch.setattr(plugin.engine, "hook", ask)
+    sid = _sid()
+    forged = {"session_id": "forged", "cwd": "/etc", "project_dir": "/etc"}
+    tool_name = "mcp__context_mode__ctx_execute"
+    args = {"language": "javascript", "code": "1", "_hermes_context": forged}
+    session_key = get_current_session_key()
+    pattern_key = f"plugin_rule:{tool_name}"  # _dispatch passes rule_key=tool_name
+
+    # Unapproved (fresh session store): the gate itself fails closed — the
+    # operation does NOT execute and nothing dispatches.
+    block, modified = _dispatch_pre(
+        tool_name=tool_name, args=args,
+        session_id=sid, task_id="t", tool_call_id="c0", turn_id="u", api_request_id="",
+    )
+    assert block, "an unapproved escalation must not execute"
+    assert "forged" not in json.dumps(modified or {}), "no forged metadata anywhere"
+
+    # The human (via the gate's session allowlist) approves this exact rule:
+    # the call proceeds — with trusted identity, forged values gone.
+    try:
+        approve_session(session_key, pattern_key)
+        block2, modified2 = _dispatch_pre(
+            tool_name=tool_name, args=dict(args),
+            session_id=sid, task_id="t", tool_call_id="c1", turn_id="u", api_request_id="",
+        )
+        assert block2 is None, f"approved call must execute, got: {block2}"
+        assert modified2 is not None, "the executor dispatches modified args, not raw args"
+        assert modified2["_hermes_context"] == plugin.engine.context(sid, os.getcwd())
+        assert modified2["_hermes_context"] != forged
+    finally:
+        approval_state._session_approved.get(session_key, set()).discard(pattern_key)
+
+    # Non-own tools keep the same ask→human-gate mapping at the hook level.
+    results = _invoke(
+        "pre_tool_call", tool_name="terminal", args={"command": "rm -rf /tmp/x"},
+        session_id=sid, task_id="t", tool_call_id="c2", turn_id="u2", api_request_id="",
+    )
+    decision = next(r for r in results if isinstance(r, dict) and r.get("action") == "approve")
+    assert "needs confirmation" in decision["message"]
+
+
+def test_own_ctx_missing_identity_fails_closed(plugin, monkeypatch):
+    """If the trusted identity cannot be produced at all, own tools fail
+    closed; other tools are untouched (no identity is involved for them)."""
+    from context_mode_hermes.engine import EngineError
+
+    def broken_identity(_session_id, _cwd):
+        raise EngineError("identity unavailable")
+
+    monkeypatch.setattr(plugin.engine, "context", broken_identity)
     block, _ = _dispatch_pre(
-        tool_name="terminal", args={"command": "git status"},
+        tool_name="mcp__context_mode__ctx_stats",
+        args={"_hermes_context": {"session_id": "forged", "cwd": "/etc", "project_dir": "/etc"}},
         session_id=_sid(), task_id="t", tool_call_id="c", turn_id="u", api_request_id="",
     )
-    assert block, "security-policy deny must be enforced with MCP down"
-    # Redirect flavor (points the model at the ctx_* MCP tools): suppressed
-    # when this Hermes process cannot call them.
+    assert block, "own-ctx calls must fail closed when identity cannot be produced"
+
+
+def test_own_ctx_engine_error_fails_closed_while_other_tools_stay_fail_open(plugin, monkeypatch):
+    """An engine check that errors must not let our MCP tools run on raw LLM
+    arguments (same forged-_hermes_context risk); every other tool keeps the
+    documented fail-open bridge behavior."""
+    from context_mode_hermes.engine import EngineError
+
+    def broken(_event, _payload):
+        raise EngineError("engine down")
+
+    monkeypatch.setattr(plugin.engine, "hook", broken)
+    forged = {"session_id": "forged", "cwd": "/etc", "project_dir": "/etc"}
+    block, _ = _dispatch_pre(
+        tool_name="mcp__context_mode__ctx_search",
+        args={"queries": ["x"], "_hermes_context": forged},
+        session_id=_sid(), task_id="t", tool_call_id="c", turn_id="u", api_request_id="",
+    )
+    assert block, "own-ctx calls must fail closed when the engine check errors"
     block2, _ = _dispatch_pre(
-        tool_name="web_extract", args={"urls": ["https://example.com/huge"]},
+        tool_name="terminal", args={"command": "pwd"},
         session_id=_sid(), task_id="t", tool_call_id="c2", turn_id="u2", api_request_id="",
     )
-    assert block2 is None, "redirect-shaped blocks are suppressed when MCP is down"
+    assert block2 is None, "non-own tools stay fail-open"
 
 
 

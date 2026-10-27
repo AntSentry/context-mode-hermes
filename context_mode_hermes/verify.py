@@ -81,8 +81,8 @@ REPORT_SCHEMA = "context-mode-hermes/verify-report/1"
 SCRUB_KEYS = (
     "HERMES_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_PROJECT_DIR", "CLAUDE_SESSION_ID",
     "CLAUDE_PLUGIN_ROOT", "CLAUDE_CODE_ENTRYPOINT", "CONTEXT_MODE_DIR",
-    "CONTEXT_MODE_BIN", "CONTEXT_MODE_PLATFORM", "XDG_CONFIG_HOME", "OMP_PLUGIN_ROOT",
-    "PI_CODING_AGENT_DIR", "PI_PROJECT_DIR",
+    "CONTEXT_MODE_BIN", "CONTEXT_MODE_PLATFORM", "CONTEXT_MODE_MCP_SENTINEL_DIR",
+    "XDG_CONFIG_HOME", "OMP_PLUGIN_ROOT", "PI_CODING_AGENT_DIR", "PI_PROJECT_DIR",
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -192,6 +192,11 @@ class LoopbackProvider:
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    @property
+    def inference_attempts(self) -> int:
+        """Rejected inference POST count — the no-inference gate's live view."""
+        return self._inference_attempts
 
     @property
     def base_url(self) -> str:
@@ -637,7 +642,8 @@ class Smoke:
 
     def report(self) -> dict:
         provider_summary = (self.provider.summarize() if self.provider else {
-            "base_url": None, "requests_total": 0, "inference_requests": 0})
+            "base_url": None, "requests_total": 0, "inference_attempts": 0,
+            "inference_requests": 0})
         return {
             "schema": REPORT_SCHEMA,
             "status": self.status,

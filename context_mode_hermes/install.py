@@ -92,7 +92,7 @@ def configure(home: Path, binary: Path) -> dict:
         child_env = engine.environment()
         isolated = {key: child_env[key] for key in (
             "HERMES_HOME", "CONTEXT_MODE_DIR", "CLAUDE_CONFIG_DIR", "CONTEXT_MODE_PLATFORM",
-            "CLAUDE_CODE_ENTRYPOINT", "XDG_CONFIG_HOME",
+            "CLAUDE_CODE_ENTRYPOINT", "XDG_CONFIG_HOME", "CONTEXT_MODE_MCP_SENTINEL_DIR",
         )}
         server.update({
             "command": sys.executable,
@@ -156,6 +156,11 @@ def remove(home: Path) -> dict:
                 "existing configuration was not changed")
         removed = {"enabled": "context-mode" in enabled, "disabled": "context-mode" in disabled,
                    "plugin_entry": "context-mode" in entries, "mcp_server": "context-mode" in servers}
+        # Snapshot the registered settings BEFORE the entry is deleted below:
+        # the retained report must describe what WAS installed (engine binary,
+        # storage dir), never the post-mutation config.
+        entry = entries.get("context-mode") if isinstance(entries.get("context-mode"), dict) else {}
+        settings = entry.get("settings") if isinstance(entry.get("settings"), dict) else {}
         if removed["enabled"]:
             plugins["enabled"] = [name for name in enabled if name != "context-mode"]
         if removed["disabled"]:
@@ -183,8 +188,6 @@ def remove(home: Path) -> dict:
                         "was changed")
                 recovery_backup = newest[0]
             save_config(config, strip_defaults=False)
-        entry = entries.get("context-mode") if isinstance(entries.get("context-mode"), dict) else {}
-        settings = entry.get("settings") if isinstance(entry.get("settings"), dict) else {}
         return {"home": str(home), "changed": changed, "removed": removed,
                 "retained": {"storage_dir": settings.get("storage_dir") or str(home / "context-mode"),
                              "engine_binary": settings.get("engine_binary"),
