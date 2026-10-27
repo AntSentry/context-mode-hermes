@@ -303,7 +303,6 @@ class _WorkerPool:
             command=self._engine.binary, args=[], env=env, cwd=project_dir
         )
         worker = _Worker(key, params)
-        self._workers[key] = worker
         self._group.start_soon(worker.run)
         return worker
 
@@ -334,6 +333,7 @@ class _WorkerPool:
                         victim = self._workers.pop(victim_key)
                         await victim.close()
                     worker = await (spawn or self._spawn)(key)
+                    self._workers[key] = worker
                 self._workers.move_to_end(key)
             await worker.started.wait()
             if worker.startup_error is not None:
@@ -494,13 +494,16 @@ async def serve(engine: Engine, max_workers: int) -> None:
             on_list_tools=proxy.list_tools,
             on_call_tool=proxy.call_tool,
         )
-        async with stdio_server() as (read, write):
-            await server.run(read, write, server.create_initialization_options())
-        # stdin closed: give idle workers a bounded graceful exit, then force
-        # the rest so the task group can never hang on a stuck engine call.
-        with anyio.move_on_after(CLOSE_TIMEOUT):
-            await proxy.aclose()
-        group.cancel_scope.cancel()
+        try:
+            async with stdio_server() as (read, write):
+                await server.run(read, write, server.create_initialization_options())
+        finally:
+            # Retract readiness on EOF, errors and signals, not only normal exit.
+            # Shield cleanup from the cancellation that brought us here.
+            with anyio.CancelScope(shield=True):
+                with anyio.move_on_after(CLOSE_TIMEOUT):
+                    await proxy.aclose()
+            group.cancel_scope.cancel()
 
 
 def main(argv: list[str] | None = None) -> int:

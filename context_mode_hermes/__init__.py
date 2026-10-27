@@ -394,7 +394,6 @@ class ContextModeBridge:
             self._remember_guidance(session_id, tool_call_id, _remap_names(context))
         return None
 
-    @_hook_safe()
     def pre_tool_call_identity(self, *, tool_name: str = "",
                                session_id: str = "", **_kwargs: Any) -> Optional[dict]:
         """Mandatory identity-modifier for our MCP tools (registered after
@@ -414,15 +413,13 @@ class ContextModeBridge:
         when the identity itself cannot be produced: policy decisions (deny /
         ask / redirect honesty) stay in ``pre_tool_call``.
         """
-        if not session_id or not tool_name.startswith(HERMES_TOOL_PREFIX):
+        if not tool_name.startswith(HERMES_TOOL_PREFIX):
             return None
-        if not self._engine.available:
-            return {"action": "block",
-                    "message": ("context-mode: engine unavailable; MCP context tools "
-                                "are blocked for this call.")}
         try:
+            if not session_id or not self._engine.available:
+                raise EngineError("trusted session or engine unavailable")
             identity = self._engine.context(session_id, self._runtime_cwd())
-        except (EngineError, OSError):
+        except Exception:
             return {"action": "block",
                     "message": ("context-mode: session identity unavailable; MCP context "
                                 "tools are blocked for this call.")}

@@ -373,7 +373,7 @@ def test_security_policy_deny_survives_mcp_unready_while_redirects_suppress(plug
             server.wait(timeout=5)
 
 
-def test_own_ctx_ask_executes_under_trusted_identity_after_human_approval(plugin, monkeypatch):
+def test_own_ctx_ask_executes_under_trusted_identity_after_human_approval(live_plugin, monkeypatch):
     """Engine 'ask' on our MCP tools escalates to the NATIVE human-approval
     gate — not a bridge-side block — and the human-approved call EXECUTES with
     the bridge-owned _hermes_context.
@@ -386,6 +386,8 @@ def test_own_ctx_ask_executes_under_trusted_identity_after_human_approval(plugin
     on. The human decision is driven through the REAL approval gate: the
     session allowlist (the gate's own '[a]lways' store, seeded via
     tools.approval.approve_session) approves the exact plugin rule."""
+    plugin = live_plugin
+    from hermes_cli.plugins import PluginContext, PluginManifest
     from tools.approval import approve_session
     from tools.approval_context import get_current_session_key
     import tools.approval as approval_state
@@ -398,7 +400,12 @@ def test_own_ctx_ask_executes_under_trusted_identity_after_human_approval(plugin
     sid = _sid()
     forged = {"session_id": "forged", "cwd": "/etc", "project_dir": "/etc"}
     tool_name = "mcp__context_mode__ctx_execute"
-    args = {"language": "javascript", "code": "1", "_hermes_context": forged}
+    expected = "APPROVED-CONTENT-" + uuid.uuid4().hex
+    input_path = plugin.cm.home / "approved-input.txt"
+    input_path.write_text(expected, encoding="utf-8")
+    args = {"language": "javascript",
+            "code": f"console.log(require('fs').readFileSync({json.dumps(str(input_path))}, 'utf8'))",
+            "_hermes_context": forged}
     session_key = get_current_session_key()
     pattern_key = f"plugin_rule:{tool_name}"  # _dispatch passes rule_key=tool_name
 
@@ -423,6 +430,10 @@ def test_own_ctx_ask_executes_under_trusted_identity_after_human_approval(plugin
         assert modified2 is not None, "the executor dispatches modified args, not raw args"
         assert modified2["_hermes_context"] == plugin.engine.context(sid, os.getcwd())
         assert modified2["_hermes_context"] != forged
+        ctx = PluginContext(PluginManifest(name="context-mode", source="entrypoint"), plugin.manager)
+        executed = ctx.call_mcp("context-mode", "ctx_execute", modified2, timeout=60)
+        assert executed["ok"], executed
+        assert expected in json.dumps(executed), executed
     finally:
         approval_state._session_approved.get(session_key, set()).discard(pattern_key)
 
@@ -450,6 +461,22 @@ def test_own_ctx_missing_identity_fails_closed(plugin, monkeypatch):
         session_id=_sid(), task_id="t", tool_call_id="c", turn_id="u", api_request_id="",
     )
     assert block, "own-ctx calls must fail closed when identity cannot be produced"
+
+
+@pytest.mark.parametrize("failure", ["missing_session", "unexpected_identity_error"])
+def test_own_ctx_identity_failure_never_forwards_forged_metadata(plugin, monkeypatch, failure):
+    if failure == "unexpected_identity_error":
+        def broken_identity(*_args):
+            raise ValueError("invalid identity record")
+        monkeypatch.setattr(plugin.engine, "context", broken_identity)
+    block, _ = _dispatch_pre(
+        tool_name="mcp__context_mode__ctx_search",
+        args={"queries": ["private"], "_hermes_context": {
+            "session_id": "forged", "cwd": "/etc", "project_dir": "/etc"}},
+        session_id="" if failure == "missing_session" else _sid(),
+        task_id="t", tool_call_id="c", turn_id="u", api_request_id="",
+    )
+    assert block, "a call without trustworthy runtime identity must not dispatch"
 
 
 def test_own_ctx_engine_error_fails_closed_while_other_tools_stay_fail_open(plugin, monkeypatch):
