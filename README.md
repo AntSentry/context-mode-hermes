@@ -161,10 +161,33 @@ Validation incident: an early smoke-driver environment error launched against th
 Evidence: [`benchmarks/results/runtime-cli-evidence.tar.gz`](benchmarks/results/runtime-cli-evidence.tar.gz) contains the CLI transcripts, installer output and incident notes. The paired request-cost measurements are in [`integrated-compact-guidance.json`](benchmarks/results/integrated-compact-guidance.json).
 
 
-
 - `tests/test_lifecycle.py` — real plugin registration on the pinned `PluginContext`/`PluginManager`, real Hermes dispatch seams, real engine subprocesses, assertions against the actual per-project session DB.
-- `tests/test_engine_contract.py`, `tests/test_install_contract.py`, `tests/test_mcp_proxy_contract.py`, `tests/test_native_hermes_contract.py`, `tests/test_commands.py` — engine CLI contract, installer output/config, proxy protocol, native Hermes integration, and slash-command behavior against the real engine.
+- `tests/test_engine_contract.py`, `tests/test_install_contract.py`, `tests/test_mcp_proxy_contract.py`, `tests/test_native_hermes_contract.py`, `tests/test_commands.py`, `tests/test_verify_contract.py` — engine CLI contract, installer output/config, proxy protocol, native Hermes integration, slash-command behavior against the real engine, and the safe verification smoke (owned profile, loopback provider with zero inference, identity-verified cleanup under interruption).
 - `tests/test_removal_contract.py` — `--remove` contract: configuration-only removal preserving later-edited settings/data, no engine/Node/npm needed, no-op and refusal exit statuses, offline install→remove→re-enable with retained searchable content.
+
+## Safe verification smoke
+
+`context-mode-hermes-verify` (also `python -m context_mode_hermes.verify`) is an operator-run **diagnostic** — not a benchmark and not a model-quality or GLM-benefit claim. On a verification-owned temporary Hermes profile it proves that the pinned **interactive** Hermes CLI (`hermes chat --cli`, never one-shot `-q`) dispatches the real `/ctx-stats`, `/ctx-doctor`, `/ctx-index` and `/ctx-search` commands through the pinned engine, that the indexed content is independently re-retrieved through the engine's public MCP stdio interface (same project) using a phrase that was never typed as a query — so no terminal echo, repaint or history replay can satisfy the proof — and that all of this happens with **zero model inference**: a loopback provider on 127.0.0.1 records every raw request (credentials redacted) and rejects `/v1/chat/completions` with HTTP 503, and any inference attempt aborts the dispatch wait promptly and is reported as a refusal with retained evidence — never as successful output.
+
+```bash
+# from this checkout, with the pinned Hermes venv python (it must be able to
+# import both this checkout and hermes_cli for the installer subprocess):
+<pinned-hermes-venv>/bin/python -m context_mode_hermes.verify \
+    --hermes <pinned-hermes-venv>/bin/hermes \
+    --engine-bin <home>/context-mode-runtime/node_modules/.bin/context-mode \
+    --evidence-dir ./verify-evidence-<run>
+```
+
+Safety envelope, regression-tested in `tests/test_verify_contract.py`:
+
+- **Owned temporary profile only.** The smoke runs in a fresh `mkdtemp` profile; the ambient `HERMES_HOME` (else `~/.hermes`) is scrubbed from every child and fingerprinted before/after — it must stay identical. The default profile is never launched against, configured, or cleaned up, and evidence/profile-root placements inside it are refused outright.
+- **Identity-verified process handling.** Children are spawned in their own process group and tracked by handle; cleanup signals that group and any process whose own `/proc/<pid>/environ` carries `HERMES_HOME=<owned profile>` (a valid unchanged start time plus the owned `HERMES_HOME`; a missing start time on both sides is absence of proof, never identity). Nothing is ever matched or killed by process name, command line, or an unverified PID, so similar-looking gateways and workers in other profiles always survive.
+- **Bounded, interrupt-safe.** SIGINT/SIGTERM interrupt bounded polls instead of waiting out full subprocess timeouts, clean up owned children within bounded waits (TERM, then KILL), retain the partial evidence, and exit 130/143 — interruption is never success; if any owned survivor outlives bounded cleanup, the owned profile is retained and its path recorded. Unresponsive owned workers are escalated to SIGKILL; foreign processes are never touched.
+- **Evidence, not environment dumps.** The evidence directory keeps the raw PTY transcript (ANSI included), one JSON file per provider request as it arrives (bodies complete, `Authorization`-style headers and the generated API key redacted), the installer output, identity proofs for every signal sent, and `verify-report.json`.
+
+Output convention: the final stdout line is `CM-VERIFY: PASS|FAIL|REFUSED|INTERRUPTED evidence=<dir>` with exit codes 0/1/2/130(-143); `--json` additionally prints the full report. The report's `checks` map names every criterion (exact pins, profile isolation, each dispatch, `mcp_stored_content`, `no_inference`, `child_exited`, `default_profile_unchanged`, `no_owned_survivors`, `telemetry_opted_out`); a refusal fires before any interactive command is dispatched (wrong Hermes pin — exact-match, not substring; wrong engine version; non-empty evidence directory; child identity mismatch; unsafe evidence/profile placement).
+
+The owned profile is deleted at the end unless `--keep` is passed or an owned survivor outlives bounded cleanup; the evidence directory is always kept.
 
 ## Hosted CI
 
