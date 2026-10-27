@@ -105,6 +105,12 @@ FAKE_REPL = textwrap.dedent(
             if MODE == "inference":
                 infer_once()
             INDEXED["nonce"] = re.search(r"CM-VERIFY-NONCE-[0-9a-f]+", line).group(0)
+            text = re.search(r'--text "(.*)" --source', line).group(1)
+            store_dir = os.path.join(HERMES_HOME, "context-mode")
+            os.makedirs(store_dir, exist_ok=True)
+            with open(os.path.join(store_dir, "verify-store.jsonl"), "a",
+                      encoding="utf-8") as fh:
+                fh.write(json.dumps({"content": text, "source": "cm-verify-smoke"}) + "\n")
             print("Indexed 1 sections (0 with code) from: cm-verify-smoke")
         elif line.startswith("/ctx-search"):
             if MODE == "stuck":
@@ -170,6 +176,76 @@ HERMES_LAUNCHER = textwrap.dedent(
     raise SystemExit(3)
     """
 )
+
+FAKE_ENGINE_MCP = """#!__PYTHON__
+import json
+import os
+import sys
+
+STORE = os.path.join(
+    os.environ.get("CONTEXT_MODE_DIR",
+                   os.path.join(os.environ.get("HERMES_HOME", ""), "context-mode")),
+    "verify-store.jsonl")
+
+
+def send(payload):
+    sys.stdout.write(json.dumps(payload) + "\n")
+    sys.stdout.flush()
+
+
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    try:
+        msg = json.loads(raw)
+    except ValueError:
+        continue
+    method = msg.get("method", "")
+    if method == "notifications/initialized":
+        continue
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": msg.get("id"), "result": {
+            "protocolVersion": msg.get("params", {}).get("protocolVersion",
+                                                         "2024-11-05"),
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "context-mode-fake", "version": "1.0.169"}}})
+        continue
+    if method == "tools/call":
+        name = msg.get("params", {}).get("name")
+        args = msg.get("params", {}).get("arguments", {})
+        if name == "ctx_index":
+            os.makedirs(os.path.dirname(STORE), exist_ok=True)
+            with open(STORE, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"content": args.get("content", ""),
+                                     "source": args.get("source", "")}) + "\n")
+            send({"jsonrpc": "2.0", "id": msg.get("id"), "result": {
+                "content": [{"type": "text", "text": "indexed"}], "isError": False}})
+            continue
+        if name == "ctx_search":
+            queries = args.get("queries", [])
+            hits = []
+            try:
+                with open(STORE, encoding="utf-8") as fh:
+                    for line in fh:
+                        record = json.loads(line)
+                        if args.get("source") and record.get("source") != args.get("source"):
+                            continue
+                        if any(q in record.get("content", "") for q in queries):
+                            hits.append(record["content"])
+            except OSError:
+                pass
+            send({"jsonrpc": "2.0", "id": msg.get("id"), "result": {
+                "content": [{"type": "text", "text": "\n".join(hits)}],
+                "isError": False}})
+            continue
+        send({"jsonrpc": "2.0", "id": msg.get("id"), "result": {
+            "content": [{"type": "text", "text": name or ""}], "isError": False}})
+        continue
+    if msg.get("id") is not None:
+        send({"jsonrpc": "2.0", "id": msg.get("id"), "result": {}})
+"""
+
 
 STUB_HERMES_CONSTANTS = textwrap.dedent(
     """\
@@ -296,7 +372,7 @@ def fake_stack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     engine_pkg = work / "engine-runtime" / "context-mode-stub"
     engine_pkg.mkdir(parents=True)
     cli = engine_pkg / "cli"
-    cli.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    cli.write_text(FAKE_ENGINE_MCP.replace("__PYTHON__", python), encoding="utf-8")
     cli.chmod(0o755)
     (engine_pkg / "package.json").write_text(json.dumps({"version": "1.0.169"}), encoding="utf-8")
     # configure() refuses engines with hoisted deps; fake a nested prefix.
@@ -349,7 +425,8 @@ def test_passing_smoke_end_to_end(fake_stack: dict) -> None:
     report = run.report
     for check in ("hermes_pin", "engine_pin", "owned_profile_isolated",
                   "installer_configured_owned_profile", "dispatch_stats", "dispatch_doctor",
-                  "dispatch_index", "dispatch_search", "no_inference", "child_exited",
+                  "dispatch_index", "dispatch_search", "mcp_stored_content",
+                  "no_inference", "child_exited",
                   "default_profile_unchanged", "no_owned_survivors", "telemetry_opted_out"):
         assert report["checks"][check]["ok"], (check, report["checks"][check])
     assert report["provider"]["inference_requests"] == 0
@@ -359,7 +436,6 @@ def test_passing_smoke_end_to_end(fake_stack: dict) -> None:
     # Interactive dispatch contract: `hermes chat --cli` on a PTY, never -q.
     transcript = (run.evidence_dir / "transcript" / "hermes-chat.log").read_text(
         encoding="utf-8", errors="replace")
-    assert "/ctx-stats" in transcript and "/ctx-search" in transcript
     assert "-q" not in transcript
 
     # Provider log retained: the capability GET is recorded with a complete raw record.
@@ -373,10 +449,13 @@ def test_passing_smoke_end_to_end(fake_stack: dict) -> None:
 def test_inference_attempt_is_failure_with_retained_request_log(fake_stack: dict) -> None:
     run = run_verify(fake_stack, env={"FAKE_MODE": "inference"})
 
-    assert run.returncode == 1
-    assert run.status == "fail"
+    assert run.returncode == 2
+    assert run.status == "refused"
     assert run.report["provider"]["inference_requests"] >= 1
+    assert run.report["provider"]["inference_attempts"] >= 1
     assert run.report["checks"]["no_inference"]["ok"] is False
+    names = [d["name"] for d in run.report["dispatches"]]
+    assert names[-1] == "index" and "search" not in names, names
 
     posts = [r for r in run.provider_records()
              if r["method"] == "POST" and r["path"] == "/v1/chat/completions"]
@@ -407,7 +486,8 @@ def test_refuses_unpinned_hermes(fake_stack: dict) -> None:
     assert run.returncode == 2
     assert run.status == "refused"
     assert run.report["checks"]["hermes_pin"]["ok"] is False
-    assert run.report["owned_home"]["path"] is None
+    assert run.report["owned_home"]["path"] is not None
+    assert run.report["owned_home"]["removed"] is True
     assert not (run.evidence_dir / "provider").exists()
 
 

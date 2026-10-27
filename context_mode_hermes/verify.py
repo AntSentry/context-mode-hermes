@@ -143,6 +143,7 @@ class LoopbackProvider:
         self._secrets = [api_key]
         self._lock = threading.Lock()
         self._seq = 0
+        self._inference_attempts = 0
         self.records: list[dict] = []
         provider = self
 
@@ -229,11 +230,14 @@ class LoopbackProvider:
             json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
         with self._lock:
             self.records.append(record)
+            if record["method"] == "POST" and record["path"] == "/v1/chat/completions":
+                self._inference_attempts += 1
 
     def summarize(self) -> dict:
         return {
             "base_url": self.base_url,
             "requests_total": len(self.records),
+            "inference_attempts": self._inference_attempts,
             "inference_requests": sum(
                 1 for r in self.records
                 if r["method"] == "POST" and r["path"] == "/v1/chat/completions"),
@@ -303,6 +307,7 @@ class ProcessLedger:
         self.signals: list[dict] = []
         self.identity_proofs: list[dict] = []
         self.strays: list[dict] = []
+        self.owned_home_marker: str | None = None
 
     def note_proof(self, pid: int, env: dict[str, str] | None, cmdline: str) -> None:
         self.identity_proofs.append({
@@ -350,9 +355,58 @@ class ProcessLedger:
 
     def signal_owned_pid(self, pid: int, sig: int, proof: dict) -> None:
         """Signal a swept PID only while its start time still matches the proof."""
-        if _proc_starttime(pid) != proof.get("starttime"):
-            return  # PID was reaped and reused between discovery and the signal
+        starttime = _proc_starttime(pid)
+        if starttime is None or starttime != proof.get("starttime"):
+            return  # gone, or starttime missing/unverifiable: no proof, no signal
+        if proof.get("hermes_home") != self.owned_home_marker:
+            return  # proof does not carry this run's owned HERMES_HOME identity
         self._record(pid, sig, "process", proof)
+
+
+def run_bounded(cmd: list[str], *, env: dict[str, str], cwd: Path,
+                timeout: float, interrupt: _InterruptFlag) -> tuple[str, str]:
+    """Run a subprocess with bounded polling so a received signal never waits
+    out the full communicate() timeout. This is app control over processes the
+    smoke itself spawned; on interruption or timeout the child group is killed
+    and reaped before propagating."""
+    proc = subprocess.Popen(cmd, env=env, cwd=str(cwd),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, start_new_session=True)
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            interrupt.check()
+            if proc.poll() is not None:
+                break
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            time.sleep(0.25)
+        return proc.communicate(timeout=10)
+    except BaseException:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except OSError:
+            proc.kill()
+        try:
+            proc.communicate(timeout=10)
+        except subprocess.SubprocessError:
+            pass
+        raise
+
+
+def _communicate_bounded(proc: subprocess.Popen, timeout: float,
+                         interrupt: _InterruptFlag) -> tuple[str, str]:
+    """Bounded communicate() for an already-spawned child: poll so a received
+    signal interrupts promptly instead of waiting out the full timeout."""
+    deadline = time.monotonic() + timeout
+    while True:
+        interrupt.check()
+        if proc.poll() is not None:
+            break
+        if time.monotonic() >= deadline:
+            raise subprocess.TimeoutExpired(proc.args, timeout)
+        time.sleep(0.25)
+    return proc.communicate(timeout=10)
 
 
 def stop_child(proc: subprocess.Popen, ledger: ProcessLedger, exit_timeout: float) -> None:
@@ -440,8 +494,14 @@ class PtyChatDriver:
                 self._buffer = self._buffer[cut:]
                 self._trimmed += cut
 
+    _SUBMIT_SETTLE_S = 0.3
+
     def send(self, line: str) -> None:
-        os.write(self._master, line.encode("utf-8") + b"\r")
+        # Hermes' rapid-input guard treats text and Enter arriving in one chunk
+        # as an inline newline: send the text, let it settle, then submit.
+        os.write(self._master, line.encode("utf-8"))
+        time.sleep(self._SUBMIT_SETTLE_S)
+        os.write(self._master, b"\r")
 
     def mark(self) -> int:
         """Transcript position (trim-adjusted) to scope a later ``wait_for``."""
@@ -451,7 +511,7 @@ class PtyChatDriver:
         return self._buffer[max(0, since - self._trimmed):]
 
     def wait_for(self, marker: str, timeout: float, interrupt: _InterruptFlag,
-                 since: int = 0) -> tuple[bool, float]:
+                 since: int = 0, abort=None) -> tuple[bool, float]:
         """Wait for *marker* in output emitted after ``since`` (an echoed older
         command can never satisfy a later dispatch's marker)."""
         deadline = time.monotonic() + timeout
@@ -459,6 +519,8 @@ class PtyChatDriver:
         while time.monotonic() < deadline:
             interrupt.check()
             self._pump(0.25)
+            if abort is not None and abort():
+                return False, time.monotonic() - started
             if marker in normalize_terminal_output(self._view(since)):
                 return True, time.monotonic() - started
             if self.proc.poll() is not None:
@@ -555,6 +617,7 @@ class Smoke:
         self.ledger = ProcessLedger()
         self.checks: dict[str, dict] = {}
         self.dispatches: list[dict] = []
+        self.indexed_sentence: str | None = None
         self.owned_home: Path | None = None
         self.default_root: Path | None = None
         self.default_before: dict | None = None
@@ -618,7 +681,7 @@ class Smoke:
 
     # -- phases ----------------------------------------------------------------
 
-    def preflight(self) -> None:
+    def preflight(self, env: dict[str, str]) -> None:
         hermes = self.args.hermes
         if not hermes:
             raise Refused("--hermes is required: point it at the pinned Hermes "
@@ -627,20 +690,29 @@ class Smoke:
         if not (hermes.is_file() and os.access(hermes, os.X_OK)):
             raise Refused(f"--hermes is not an executable file: {hermes}")
         self.args.hermes = hermes
+        # Every subprocess, the version probe included, runs under the owned
+        # HOME/HERMES_HOME environment, after the default profile fingerprint.
         try:
-            version = subprocess.run([str(hermes), "--version"],
-                                     capture_output=True, text=True, timeout=120)
+            stdout, stderr = run_bounded([str(hermes), "--version"],
+                                         env=env, cwd=self.owned_home,
+                                         timeout=120, interrupt=self.interrupt)
+        except subprocess.TimeoutExpired:
+            raise Refused(f"{hermes} --version did not answer within 120s") from None
         except (OSError, subprocess.SubprocessError) as exc:
             raise Refused(f"cannot execute {hermes} --version: {exc}") from None
-        lines = (version.stdout or version.stderr).strip().splitlines()
+        lines = (stdout or stderr or "").strip().splitlines()
         version_line = lines[0] if lines else ""
-        if not self.check("hermes_pin", HERMES_PIN in version_line,
-                          f"required Hermes v{HERMES_PIN}; --version said: {version_line!r}"):
+        pin = tuple(int(part) for part in HERMES_PIN.split("."))
+        match = re.search(r"(\d+)\.(\d+)\.(\d+)", version_line)
+        parsed = tuple(int(g) for g in match.groups()) if match else None
+        if not self.check("hermes_pin", parsed == pin,
+                          f"required Hermes v{HERMES_PIN} exactly; --version said: {version_line!r}"):
             raise Refused("Hermes version is not the pinned one; refusing to launch anything")
         if not self.args.engine_bin:
             raise Refused("--engine-bin is required: point it at the pinned context-mode binary")
         engine_bin = Path(str(self.args.engine_bin)).expanduser()
-        engine = Engine(binary=str(engine_bin))
+        engine = Engine(binary=str(engine_bin),
+                        storage_root=str(self.owned_home / "context-mode"))
         found = getattr(engine, "version", "unknown")
         if not self.check("engine_pin", engine.available and found == ENGINE_VERSION,
                           f"required context-mode {ENGINE_VERSION}; found {found} at {engine_bin}"):
@@ -648,9 +720,6 @@ class Smoke:
         self.args.engine_bin = engine_bin
 
     def create_owned_profile(self) -> None:
-        self.default_root = Path(os.environ.get(
-            "HERMES_HOME", str(Path.home() / ".hermes"))).expanduser()
-        self.default_before = fingerprint_default_profile(self.default_root)
         profile_root = self.args.profile_root.expanduser()
         profile_root.mkdir(parents=True, exist_ok=True)
         self.owned_home = Path(tempfile.mkdtemp(prefix="hermes-verify-", dir=str(profile_root)))
@@ -661,6 +730,7 @@ class Smoke:
             "created": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
             "parent_pid": os.getpid(),
         }, indent=2), encoding="utf-8")
+        self.ledger.owned_home_marker = str(self.owned_home)
         self.check("owned_profile_isolated", True,
                    f"fresh mkdtemp profile {self.owned_home}; the ambient HERMES_HOME "
                    "is scrubbed from every child")
@@ -672,7 +742,8 @@ class Smoke:
             cwd=str(REPO_ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, start_new_session=True)
         try:
-            stdout, stderr = proc.communicate(timeout=self.args.command_timeout)
+            stdout, stderr = _communicate_bounded(
+                proc, self.args.command_timeout, self.interrupt)
         except subprocess.TimeoutExpired:
             proc.kill()
             stdout, stderr = proc.communicate(timeout=10)
@@ -700,8 +771,62 @@ class Smoke:
                    TELEMETRY_OFF_RE.search(config_text) is not None,
                    "owned profile config sets telemetry.shared_metrics.enabled=false")
 
+    def verify_stored_content_via_mcp(self, workspace: Path) -> None:
+        """Independent proof that the interactive /ctx-index content is really
+        stored: ask the engine's public MCP stdio interface (same project, no
+        terminal, no history) for a phrase that was never typed as a query.
+        Only stored content can answer; an echo or a repaint cannot."""
+        try:
+            import asyncio
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+        except ImportError as exc:
+            raise Refused(
+                f"public MCP client unavailable ({exc}); cannot independently "
+                "verify stored content, so the smoke fails closed") from None
+
+        probe = "harbors before dawn"  # never sent as any interactive query
+        sentence_body = (self.indexed_sentence or "").replace(f"{self.nonce} ", "")
+
+        async def round_trip() -> str:
+            env = {k: v for k, v in os.environ.items() if k not in SCRUB_KEYS}
+            env.update({
+                "HERMES_HOME": str(self.owned_home),
+                "HOME": str(self.owned_home),
+                "CONTEXT_MODE_DIR": str(self.owned_home / "context-mode"),
+                "CLAUDE_CONFIG_DIR": str(self.owned_home / "context-mode-host"),
+                "XDG_CONFIG_HOME": str(self.owned_home / "context-mode-host" / "xdg-config"),
+                "CLAUDE_PROJECT_DIR": str(workspace),
+                "CONTEXT_MODE_PROJECT_DIR": str(workspace),
+                "CLAUDE_SESSION_ID": "cm-verify-mcp-probe",
+                "PYTHONPATH": str(REPO_ROOT),
+                "PATH": os.environ.get("PATH", ""),
+            })
+            parameters = StdioServerParameters(
+                command=str(self.args.engine_bin), env=env, cwd=str(workspace))
+            async with asyncio.timeout(120):
+                async with stdio_client(parameters) as (reader, writer):
+                    async with ClientSession(reader, writer) as client:
+                        await client.initialize()
+                        result = await client.call_tool(
+                            "ctx_search",
+                            {"queries": [probe], "source": "cm-verify-smoke"})
+                        return "\n".join(
+                            getattr(item, "text", "") for item in result.content)
+
+        found = asyncio.run(round_trip())
+        ok = bool(sentence_body) and sentence_body in found
+        self.check("mcp_stored_content", ok,
+                   f"public MCP ctx_search for the never-queried phrase "
+                   f"{probe!r} {'returned' if ok else 'did NOT return'} the "
+                   f"interactively indexed sentence; output: {found[-400:]!r}")
+        if not ok:
+            self.status = "fail"
+            self.error = "stored-content proof via the public MCP client failed"
+
     def dispatch_cycle(self, driver: PtyChatDriver) -> None:
         sentence = f"{self.nonce} the amber lighthouse catalogs quiet harbors before dawn"
+        self.indexed_sentence = sentence
         plan = [
             ("stats", "/ctx-stats", "v1.0.169"),
             ("doctor", "/ctx-doctor", "mcp_servers['context-mode'] configured"),
@@ -711,10 +836,21 @@ class Smoke:
         ]
         for name, command, marker in plan:
             self.interrupt.check()
+            if self.provider.inference_attempts:
+                raise Refused(
+                    "the live client attempted a model inference request "
+                    f"during dispatch of {command!r}; aborting before any "
+                    "further commands instead of letting it retry")
             position = driver.mark()
             driver.send(command)
-            matched, elapsed = driver.wait_for(marker, self.args.command_timeout,
-                                               self.interrupt, since=position)
+            matched, elapsed = driver.wait_for(
+                marker, self.args.command_timeout, self.interrupt, since=position,
+                abort=lambda: self.provider.inference_attempts > 0)
+            if not matched and self.provider.inference_attempts:
+                raise Refused(
+                    "the live client attempted a model inference request while "
+                    f"waiting for {command!r}; aborting the wait promptly "
+                    "instead of letting the client retry for minutes")
             self.dispatches.append({
                 "name": name, "command": command, "marker": marker,
                 "matched": matched, "elapsed_s": round(elapsed, 2),
@@ -728,14 +864,30 @@ class Smoke:
         args = self.args
         for received in (signal.SIGINT, signal.SIGTERM):
             signal.signal(received, lambda s, frame, snum=received: self.interrupt.trip(snum))
+        # Fingerprint the operator's real default profile BEFORE any spawn or
+        # write; every later subprocess runs under the owned environment only.
+        self.default_root = Path(os.environ.get(
+            "HERMES_HOME", str(Path.home() / ".hermes"))).expanduser()
+        self.default_before = fingerprint_default_profile(self.default_root)
+        for label, candidate in (("evidence directory", self.evidence),
+                                 ("profile root", self.args.profile_root)):
+            resolved = candidate.expanduser().resolve()
+            try:
+                resolved.relative_to(self.default_root)
+            except ValueError:
+                continue
+            raise Refused(
+                f"{label} {candidate} is inside the default profile "
+                f"{self.default_root}; the smoke must never write into the "
+                "operator's default profile")
         if self.evidence.exists() and any(self.evidence.iterdir()):
             raise Refused(f"evidence directory is not empty: {self.evidence}")
         self.evidence.mkdir(parents=True, exist_ok=True)
 
         try:
-            self.preflight()
             self.create_owned_profile()
             env = child_environment(self.owned_home)
+            self.preflight(env)
             workspace = self.owned_home / "workspace"
             workspace.mkdir(parents=True, exist_ok=True)
 
@@ -753,11 +905,16 @@ class Smoke:
                 self.ledger.note_proof(driver.proc.pid, live_env,
                                        _proc_cmdline(driver.proc.pid))
                 isolated = bool(live_env) and live_env.get("HERMES_HOME") == str(self.owned_home)
-                self.check("owned_profile_isolated", isolated,
-                           f"child pid {driver.proc.pid} runs with HERMES_HOME="
-                           f"{(live_env or {}).get('HERMES_HOME')!r} "
-                           f"(owned: {str(self.owned_home)!r}); refusal would fire before "
-                           "any dispatch if this ever diverged")
+                if not isolated:
+                    # Refuse BEFORE dispatching any command: an unowned child
+                    # must never receive a single scripted keystroke.
+                    raise Refused(
+                        f"child pid {driver.proc.pid} runs with HERMES_HOME="
+                        f"{(live_env or {}).get('HERMES_HOME')!r}, not the owned "
+                        f"{str(self.owned_home)!r}; refusing before any dispatch")
+                self.check("owned_profile_isolated", True,
+                           f"child pid {driver.proc.pid} runs with the owned HERMES_HOME="
+                           f"{str(self.owned_home)!r} (verified through /proc environ)")
                 self.dispatch_cycle(driver)
                 driver.send("/exit")
                 try:
@@ -771,6 +928,11 @@ class Smoke:
             finally:
                 stop_child(driver.proc, self.ledger, args.exit_timeout)
                 driver.close()
+            # Independent stored-content proof after the CLI cycle: query the
+            # engine's public MCP stdio interface directly (same project) for a
+            # phrase never typed as a query, so no terminal echo, repaint or
+            # history can satisfy it - only really stored content can.
+            self.verify_stored_content_via_mcp(workspace)
         except Refused as exc:
             self.status = "refused"
             self.error = str(exc)
@@ -823,8 +985,13 @@ class Smoke:
             self.check("default_profile_unchanged", unchanged,
                        f"default profile {self.default_root} fingerprint "
                        f"{'unchanged' if unchanged else 'CHANGED'} across the smoke")
-            if not self.args.keep and self.owned_home and self.owned_home.exists():
+            if (not self.args.keep and swept and self.owned_home
+                    and self.owned_home.exists()):
                 shutil.rmtree(self.owned_home, ignore_errors=True)
+            elif self.owned_home and self.owned_home.exists():
+                self.check("owned_profile_kept", True,
+                           f"owned profile {self.owned_home} retained "
+                           "(survivors or --keep); path recorded for manual inspection")
         except Exception as exc:  # cleanup must always finish and report
             self.error = self.error or f"cleanup error: {type(exc).__name__}: {exc}"
             if self.status not in ("interrupted", "refused"):
