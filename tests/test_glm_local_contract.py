@@ -234,12 +234,14 @@ def test_start_refuses_substituted_engine_without_touching_runtime_state(
 
 
 @pytest.fixture
-def controlled_server_process(tmp_path):
+def controlled_server_process(tmp_path, request):
     import subprocess
     import sys
 
+    setup = ("import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+             if getattr(request, "param", False) else "")
     child = subprocess.Popen(
-        [sys.executable, "-c", "import time; print('READY', flush=True); time.sleep(120)"],
+        [sys.executable, "-c", setup + "import time; print('READY', flush=True); time.sleep(120)"],
         stdout=subprocess.PIPE, text=True)
     try:
         assert child.stdout.readline() == "READY\n"
@@ -268,6 +270,7 @@ def test_direct_child_shutdown_reaps_exit_before_reporting_cleanup(
     assert [event["signal"] for event in report["events"]] == ["SIGTERM"]
 
 
+@pytest.mark.parametrize("controlled_server_process", [True], indirect=True)
 def test_unreadable_identity_after_term_is_not_reported_as_gone(
         controlled_server_process, monkeypatch):
     import os
@@ -287,9 +290,6 @@ def test_unreadable_identity_after_term_is_not_reported_as_gone(
     def stop_before_term(pid, sig):
         nonlocal term_sent
         if pid == child.pid and sig == signal.SIGTERM:
-            # A real stopped process remains alive while its identity read
-            # becomes unavailable. Do not let normal TERM exit mask the case.
-            original_kill(pid, signal.SIGSTOP)
             term_sent = True
         return original_kill(pid, sig)
 

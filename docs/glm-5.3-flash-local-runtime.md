@@ -238,6 +238,9 @@ Direct children are reaped before exit classification. If identity becomes
 unreadable while a PID still exists, `pid_gone` remains unknown (`null`), not
 successful cleanup. The retained controlled-HTTP diagnostic exercises failed
 cycle/error retention and physical child shutdown without model inference.
+Real-process regressions distinguish a normal TERM exit from a TERM-ignoring
+process that remains alive while identity is unavailable; actual exit remains
+positive evidence, not an identity-read failure.
 
 The earlier archived serve cycles and adopted warm toolflow used the original
 reused `hermes-glm-resource-probe` scope and a per-run key on argv. They predate
