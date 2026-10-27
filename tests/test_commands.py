@@ -105,6 +105,20 @@ def test_session_purge_preserves_sibling_session_decisions(runtime):
     assert "amber deployment region" not in runtime.run("ctx-search", "amber --sort timeline")
     assert "violet encryption key" in runtime.run("ctx-search", "violet --sort timeline", session_id=other)
 
+def test_operator_can_index_and_retrieve_again_after_session_purge(runtime):
+    runtime.engine.hook("userpromptsubmit", {
+        "session_id": runtime.session_id,
+        "cwd": str(runtime.workspace),
+        "prompt": "Prior maintenance decision for this session.",
+    })
+    runtime.run("ctx-index", '--text "# Prior order\nReplace nineteen bronze couplings." --source prior')
+    assert "nineteen bronze couplings" in runtime.run("ctx-search", "couplings --source prior")
+    runtime.run("ctx-purge", "session confirm")
+    assert "nineteen bronze couplings" not in runtime.run("ctx-search", "couplings --source prior")
+    runtime.run("ctx-index", '--text "# New order\nRetain twenty-three ceramic sleeves." --source renewal')
+    assert "twenty-three ceramic sleeves" in runtime.run("ctx-search", "sleeves --source renewal")
+
+
 
 def test_malformed_index_request_does_not_replace_existing_source(runtime):
     runtime.run("ctx-index", '--text "# Existing\nThe retained invoice totals forty-three credits." --source invoice')

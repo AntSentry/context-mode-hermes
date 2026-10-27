@@ -29,12 +29,25 @@ command, without forced interruption or process-group signals.
 Its recovery controller uses the public structured single-query terminal result
 for model completion, then a native conversation export; it never treats silent
 CPU prefill or terminal prompt decorations as completion. Recovery evidence is
-under `/home/a1234/.cache/hermes-context-mode/evidence/ticket-5/recovery2-5ae87af0/`.
-The earlier `recovery-xvq8ulja` failure is retained: session purge intentionally
-removed its session-owned indexed chunks, contrary to that controller's
-expectation. The corrected retention fixture is indexed **before** removal;
-there is no re-indexing after removal. This document does not claim the pending
-cycle passed.
+under `/home/a1234/.cache/hermes-context-mode/evidence/ticket-5/recovery3-uzv7aoen/`.
+Earlier recovery failures remain retained: session purge intentionally removed
+its session-owned indexed chunks, contrary to the first recovery controller's
+expectation; the next attempt correctly found that session already empty.
+The continuation adopts the completed confirmed purge rather than inventing
+another positive pre-purge count. The retention fixture is indexed **before**
+removal, never afterwards. This document does not claim the pending cycle passed.
+
+The third recovery exposed a real operator-path bug: after purge, `/ctx-index`
+stored the new chunks, but project-scoped search hid them because the operator
+path bypassed the model-tool capture hook and left no session-event membership.
+Successful operator indexing now records its actual result through the existing
+engine `posttooluse` hook, using trusted Hermes identity. The fix does not alter
+the pinned engine, relax search scope or fabricate conversation history.
+A real-engine regression failed before and passed after; all 12 command checks
+passed. Actual native interactive index/search on the purged working session
+also passed, with three real operator-capture events, correct workspace and no
+owned survivors. That zero-inference repair smoke is retained at
+`/home/a1234/.cache/hermes-context-mode/evidence/ticket-5/operator-index-fix-uas2urha/`.
 
 Native Hermes compression remains in control. Real-model continuity and paired
 net-benefit measurements remain separate acceptance gates. Existing controlled

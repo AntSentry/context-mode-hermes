@@ -86,6 +86,28 @@ def _mcp_call(ctx: Any, engine: Any, tool: str, arguments: dict, timeout: float 
     except Exception as exc:  # host timeouts, transport failures, tool errors
         raise _Usage(f"MCP call {tool} failed: {exc}") from None
     rendered = _render_envelope(response, tool)
+    if (tool == "ctx_index" and session is not None
+            and isinstance(response, dict) and response.get("ok") is True):
+        # Operator commands bypass Hermes' model-tool hooks. Capture this real
+        # index result through the same upstream hook as model-issued indexing:
+        # project-scoped retrieval joins indexed chunks to captured session ids.
+        # Without this, an existing/emptied session DB hides operator-only indexes.
+        from . import CC_PLUGIN_TOOL_PREFIX
+
+        context = payload["_hermes_context"]
+        try:
+            engine.hook("posttooluse", {
+                "tool_name": CC_PLUGIN_TOOL_PREFIX + tool,
+                "tool_input": arguments,
+                "tool_response": rendered,
+                "session_id": context["session_id"],
+                "cwd": context["cwd"],
+            })
+        except EngineError as exc:
+            raise _Usage(
+                f"Content was indexed, but its session attribution failed: {exc}. "
+                "Project-scoped retrieval may not find it."
+            ) from None
     return rendered
 
 
