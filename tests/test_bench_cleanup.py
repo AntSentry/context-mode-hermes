@@ -132,6 +132,26 @@ def test_timeout_path_is_bounded_term_then_kill_per_verified_pid_and_spares_deco
         _reap(stubborn)
 
 
+def test_stopping_one_client_preserves_an_independent_client_in_the_same_profile(tmp_path):
+    home = tmp_path / "working-profile"
+    home.mkdir()
+    target = _spawn(home)
+    independent = _spawn(home)
+    try:
+        _wait_visible(home, target.pid, independent.pid)
+        ledger = ProcessLedger()
+        ledger.owned_home_marker = str(home)
+
+        stop_child(target, ledger, exit_timeout=3.0)
+
+        assert target.poll() is not None
+        assert independent.poll() is None, "sharing a profile does not establish child ownership"
+        assert all(event["target"] != independent.pid for event in ledger.signals)
+    finally:
+        _reap(target)
+        _reap(independent)
+
+
 def test_final_sweep_covers_every_owned_arm_profile_only(tmp_path):
     """The main()-finally seam: every explicitly owned arm profile is swept
     (each swept PID carries that home's identity), and root-mentioning

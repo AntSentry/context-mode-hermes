@@ -338,11 +338,24 @@ class ProcessLedger:
         })
 
     def signal_owned_children(self, proc: subprocess.Popen, sig: int) -> None:
-        """A process group is not ownership: descendants can select other profiles."""
+        """Require both launch ancestry and fresh profile/start-time identity."""
         if proc.poll() is not None:
             return
+        related: set[int] = set()
+        pending = [proc.pid]
+        while pending:
+            pid = pending.pop()
+            if pid in related:
+                continue
+            related.add(pid)
+            try:
+                children = Path(f"/proc/{pid}/task/{pid}/children").read_text()
+            except OSError:
+                continue
+            pending.extend(int(child) for child in children.split())
         for proof in owned_hermes_pids(Path(self.owned_home_marker), exclude={os.getpid()}):
-            self.signal_owned_pid(proof["pid"], sig, proof)
+            if proof["pid"] in related:
+                self.signal_owned_pid(proof["pid"], sig, proof)
 
     def signal_owned_pid(self, pid: int, sig: int, proof: dict) -> None:
         """Signal a swept PID only while its start time still matches the proof."""

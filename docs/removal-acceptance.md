@@ -60,6 +60,9 @@ phase):
    operators scripting removal) must stop the old gateway first. The runner
    does this strictly per PID (`/proc` `HERMES_HOME` identity + start time
    re-verified before each signal).
-3. A gateway start can take ~15–35 s on this machine; driver code must wait
-   for real content markers (the `❯` glyph also appears in the status bar).
+3. Startup can take ~15–35 s on this machine. In the pinned `--cli` TUI,
+   the composer uses `❯` when idle and `☤` while busy; the status bar does not
+   emit `❯`. Input echoes and subagent UI can contain the same glyph, so use
+   fresh content markers and a completed native conversation export when
+   proving a real model turn, not an unscoped prompt match.
 
