@@ -2,3 +2,4 @@
 !.gitignore
 !integrated-compact-guidance.json
 !runtime-cli-evidence.tar.gz
+!safe-verification-evidence.tar.gz

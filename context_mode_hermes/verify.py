@@ -587,7 +587,10 @@ def write_owned_config(owned_home: Path, provider: LoopbackProvider,
             "api_key": api_key,
             "default": MODEL_NAME,
         },
-        "telemetry": {"shared_metrics": {"enabled": False, "send": False}},
+        # Pinned Hermes v0.22.5 re-asks old opt-outs without consent offer v2;
+        # that modal consumes startup keystrokes before the slash dispatcher.
+        "telemetry": {"shared_metrics": {
+            "enabled": False, "send": False, "offer_version": 2}},
         "mcp_servers": {
             "context-mode": {
                 "command": sys.executable,
@@ -852,15 +855,15 @@ class Smoke:
             matched, elapsed = driver.wait_for(
                 marker, self.args.command_timeout, self.interrupt, since=position,
                 abort=lambda: self.provider.inference_attempts > 0)
+            self.dispatches.append({
+                "name": name, "command": command, "marker": marker,
+                "matched": matched, "elapsed_s": round(elapsed, 2),
+            })
             if not matched and self.provider.inference_attempts:
                 raise Refused(
                     "the live client attempted a model inference request while "
                     f"waiting for {command!r}; aborting the wait promptly "
                     "instead of letting the client retry for minutes")
-            self.dispatches.append({
-                "name": name, "command": command, "marker": marker,
-                "matched": matched, "elapsed_s": round(elapsed, 2),
-            })
             self.check(f"dispatch_{name}", matched,
                        f"interactive dispatch of {command!r} "
                        + ("echoed its marker" if matched else "timed out waiting for its marker")
@@ -921,6 +924,15 @@ class Smoke:
                 self.check("owned_profile_isolated", True,
                            f"child pid {driver.proc.pid} runs with the owned HERMES_HOME="
                            f"{str(self.owned_home)!r} (verified through /proc environ)")
+                ready, elapsed = driver.wait_for(
+                    "❯", args.command_timeout, self.interrupt,
+                    abort=lambda: self.provider.inference_attempts > 0)
+                self.check("interactive_ready", ready,
+                           f"native input prompt {'ready' if ready else 'absent'} "
+                           f"after {elapsed:.1f}s; no keystrokes sent before readiness")
+                if not ready:
+                    raise Refused("interactive Hermes input prompt unavailable; "
+                                  "refusing to send startup keystrokes")
                 self.dispatch_cycle(driver)
                 driver.send("/exit")
                 try:
