@@ -220,3 +220,10 @@ local-only) lives in `/home/a1234/.cache/hermes-context-mode/ticket-4-evidence/`
 published archives are sanitized (all actual loopback API keys replaced,
 including spawn-argv reprs; the codeword nonce is intentionally retained as
 correctness proof).
+
+### Portable regression checks
+
+The proof-command exit-code regressions use an owned temporary artifact for
+provenance hashing and controlled cycle outcomes. They do not require this
+machine's llama-server path or weights on a CI runner. Actual GLM execution is
+evidenced by the live transcripts above, not those isolated gate tests.

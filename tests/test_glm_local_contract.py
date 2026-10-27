@@ -18,6 +18,14 @@ import pytest
 from benchmarks import glm_local
 
 
+@pytest.fixture
+def owned_engine_artifact(tmp_path, monkeypatch):
+    """Keep exit-code tests independent of the operator's installed runtime."""
+    artifact = tmp_path / "llama-server"
+    artifact.write_bytes(b"controlled proof-gate artifact\n")
+    monkeypatch.setattr(glm_local, "ENGINE_PATH", artifact)
+
+
 def test_parse_llama_timings() -> None:
     log = """info: prompt eval time =  123456.78 ms /    456 tokens (  270.74 ms per token,     3.69 tokens per second)
 info: eval time =      5123.45 ms /    32 runs   (  160.11 ms per token,     6.25 tokens per second)
@@ -110,7 +118,7 @@ def test_saved_transcript_parser_requires_completed_final_answer(
 
 
 def test_prove_exit_code_fails_when_required_toolproof_rejected(
-        tmp_path, monkeypatch) -> None:
+        tmp_path, monkeypatch, owned_engine_artifact) -> None:
     """Consumer-visible regression: ``prove`` must exit nonzero when a
     REQUIRED tool proof fails acceptance — a cycle error is not the only
     failure mode. Controlled local seam around the real cmd_prove."""
@@ -156,7 +164,7 @@ def test_prove_exit_code_fails_when_required_toolproof_rejected(
 
 
 def test_prove_exit_code_fails_on_omitted_required_proof_and_failed_stop(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, owned_engine_artifact):
     """Omitted required toolproof and a failed stop both exit nonzero —
     absence of evidence is not success."""
     import shutil
