@@ -36,6 +36,7 @@ context-mode = "context_mode_hermes"
 
 [project.scripts]
 context-mode-hermes = "context_mode_hermes.install:main"
+context-mode-hermes-verify = "context_mode_hermes.verify:main"
 
 [tool.setuptools.packages.find]
 include = ["context_mode_hermes*"]
