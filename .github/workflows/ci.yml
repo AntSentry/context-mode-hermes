@@ -9,18 +9,32 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e .[dev]
-    - name: Run tests
-      run: python -m pytest -vv
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install locked Hermes and adapter
+        run: |
+          python -m pip install uv
+          git clone --depth 1 --branch v0.22.5 https://github.com/NousResearch/hermes-agent.git "$RUNNER_TEMP/hermes-agent"
+          uv sync --project "$RUNNER_TEMP/hermes-agent" --locked --python 3.14 --no-dev --extra mcp
+          uv pip install --python "$RUNNER_TEMP/hermes-agent/.venv/bin/python" -e ".[dev]"
+          echo "$RUNNER_TEMP/hermes-agent/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install locked context-mode engine
+        run: context-mode-hermes --home "$HOME/hermes-context-mode-ci" --install-engine
+
+      - name: Run real-engine tests
+        run: |
+          export CONTEXT_MODE_TEST_BIN="$HOME/hermes-context-mode-ci/context-mode-runtime/node_modules/.bin/context-mode"
+          test -x "$CONTEXT_MODE_TEST_BIN"
+          python -m pytest -vv -ra
