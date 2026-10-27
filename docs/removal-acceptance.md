@@ -8,10 +8,12 @@ client**, with zero model inference, on owned temporary profiles only.
 - Ticket: [issue #2](https://github.com/AntSentry/context-mode-hermes/issues/2)
 - Baseline: integration `eadf496` (ticket branch `ticket/2-reversible-removal`)
 - Evidence bundle: `benchmarks/results/removal-acceptance-evidence.tar.gz`
-  (sha256 `b0a19b4afedd3b26968804636502d9c4979713f0ff085fd7d217737501b680c4`)
+  (sha256 `9282fd4e678eaa9123f28a73e274fd26257750ad0a5d6fd74dfd5dbd5c42f04d`)
 - Raw run (outside git, retained):
   `/home/a1234/.cache/hermes-context-mode/evidence/ticket-2/run-20261027-032706-70c373`
 - Verdict line: `CM-TICKET2: PASS evidence=…` — **57/57 checks passed**
+
+The published archive redacts the generated loopback key from configuration snapshots. Recorded byte-exact/hash comparisons describe the original local run; the unredacted originals remain only in the local evidence directory above.
 
 ## What was proven (issue #2 acceptance criteria)
 
@@ -33,14 +35,11 @@ Prerequisites: pinned Hermes v0.22.5 CLI + adapter venv
 (`/home/a1234/.cache/hermes-context-mode/hermes-agent/.venv/bin`), a context-mode
 1.0.169 engine executable, and a scratch directory owned by you.
 
-1. `PYTHONPATH=<worktree> .venv/bin/context-mode-hermes --home <fresh-owned-home> --engine-bin <engine-169> install`
+1. `PYTHONPATH=<checkout> <pinned-venv>/bin/context-mode-hermes --home <fresh-owned-home> --engine-bin <engine-169>`
 2. Use the profile (or edit config with Hermes' own writer) — later edits must survive.
 3. `.venv/bin/context-mode-hermes --home <home> --remove` — note the reported `recovery_backup`, then restart the profile's gateway so new sessions run native Hermes.
 4. Repeat `--remove` (no-op success), restore the recovery copy (registration returns), re-enable offline with the same `--engine-bin` (no npm/network).
-5. Full automated lifecycle (all of the above plus the three interactive sessions, the loopback no-inference provider and per-PID cleanup):
-   `evidence/ticket-2/removal_acceptance.py` inside the bundle, run as
-   `.venv/bin/python removal_acceptance.py` from the evidence tree. It refuses
-   to start if any process already carries `HERMES_HOME` under the evidence root.
+5. The bundle contains the captured `removal_acceptance.py` at its archive root. It records the full automated lifecycle above. Its checkout, Hermes, engine and evidence-root paths are machine-specific constants near the top; update those paths before a fresh run from an extracted copy. It refuses to start if a process already carries `HERMES_HOME` under the chosen evidence root.
 
 ## Operational notes discovered while producing this evidence
 
@@ -64,14 +63,3 @@ phase):
 3. A gateway start can take ~15–35 s on this machine; driver code must wait
    for real content markers (the `❯` glyph also appears in the status bar).
 
-## README additions suggested for Main (report-only; this ticket does not edit README)
-
-1. In the removal section: state that the recovery copy of the removed
-   configuration is written via Hermes' own backup mechanism at
-   `<home>/backups/config/config.yaml.context-mode-removal.<timestamp>` and that
-   copying it back over `config.yaml` alone restores the registration.
-2. In the removal section: recommend the same engine reuse for re-enable
-   (`--engine-bin` of the retained runtime) and note that removal, repeated
-   removal and re-enable all work with no Node/npm on `PATH`.
-3. Operator note: homes used for validation must not sit inside a directory
-   named `profiles/` (multiplexing; see notes above).

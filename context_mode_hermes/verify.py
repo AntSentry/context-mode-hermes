@@ -735,6 +735,27 @@ class Smoke:
                    f"fresh mkdtemp profile {self.owned_home}; the ambient HERMES_HOME "
                    "is scrubbed from every child")
 
+    def _confirm_child_identity(self, proc: subprocess.Popen, *, wait_for_exec: bool) -> None:
+        # /proc/environ can be briefly unreadable across exec. Only unavailable
+        # data gets a bounded wait; a readable foreign profile is refused at once.
+        deadline = time.monotonic() + min(5.0, self.args.command_timeout)
+        live_env = _proc_environ(proc.pid)
+        while (wait_for_exec and not live_env and proc.poll() is None
+               and time.monotonic() < deadline):
+            self.interrupt.check()
+            time.sleep(0.02)
+            live_env = _proc_environ(proc.pid)
+        self.ledger.note_proof(proc.pid, live_env, _proc_cmdline(proc.pid))
+        isolated = bool(live_env) and live_env.get("HERMES_HOME") == str(self.owned_home)
+        self.check("owned_profile_isolated", isolated,
+                   f"child pid {proc.pid} observed HERMES_HOME="
+                   f"{(live_env or {}).get('HERMES_HOME')!r}; "
+                   f"required owned profile {str(self.owned_home)!r}")
+        if not isolated:
+            raise Refused(
+                f"child pid {proc.pid} does not prove the owned profile identity; "
+                "refusing before any dispatch")
+
     def run_installer(self, env: dict[str, str]) -> None:
         proc = subprocess.Popen(
             [sys.executable, "-m", "context_mode_hermes.install",
@@ -901,20 +922,7 @@ class Smoke:
             driver = PtyChatDriver([str(args.hermes), "chat", "--cli"], chat_env,
                                    workspace, self.evidence / "transcript" / "hermes-chat.log")
             try:
-                live_env = _proc_environ(driver.proc.pid)
-                self.ledger.note_proof(driver.proc.pid, live_env,
-                                       _proc_cmdline(driver.proc.pid))
-                isolated = bool(live_env) and live_env.get("HERMES_HOME") == str(self.owned_home)
-                if not isolated:
-                    # Refuse BEFORE dispatching any command: an unowned child
-                    # must never receive a single scripted keystroke.
-                    raise Refused(
-                        f"child pid {driver.proc.pid} runs with HERMES_HOME="
-                        f"{(live_env or {}).get('HERMES_HOME')!r}, not the owned "
-                        f"{str(self.owned_home)!r}; refusing before any dispatch")
-                self.check("owned_profile_isolated", True,
-                           f"child pid {driver.proc.pid} runs with the owned HERMES_HOME="
-                           f"{str(self.owned_home)!r} (verified through /proc environ)")
+                self._confirm_child_identity(driver.proc, wait_for_exec=True)
                 ready, elapsed = driver.wait_for(
                     "❯", args.command_timeout, self.interrupt,
                     abort=lambda: self.provider.inference_attempts > 0)
@@ -924,6 +932,9 @@ class Smoke:
                 if not ready:
                     raise Refused("interactive Hermes input prompt unavailable; "
                                   "refusing to send startup keystrokes")
+                # A launcher can exec another process before the prompt appears.
+                # Recheck the final live identity immediately before any input.
+                self._confirm_child_identity(driver.proc, wait_for_exec=False)
                 self.dispatch_cycle(driver)
                 driver.send("/exit")
                 try:

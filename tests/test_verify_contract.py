@@ -636,3 +636,40 @@ def test_relative_executable_args_canonicalize_once_before_any_child(fake_stack:
     assert run.report["checks"]["installer_configured_owned_profile"]["ok"]
     assert Path(run.report["engine_bin"]) == fake_stack["engine_bin"].resolve()
     assert Path(run.report["hermes"]) == fake_stack["hermes"]
+
+
+@pytest.mark.parametrize("observation", ["exec_unreadable", "foreign_profile"])
+def test_initial_proc_identity_observation_is_safe(fake_stack, monkeypatch, observation):
+    from context_mode_hermes import verify
+
+    original = verify._proc_environ
+    first = True
+
+    def initial_observation(pid):
+        nonlocal first
+        if first:
+            first = False
+            if observation == "exec_unreadable":
+                return None
+            return {"HERMES_HOME": str(fake_stack["work"] / "foreign-profile")}
+        return original(pid)
+
+    monkeypatch.setattr(verify, "_proc_environ", initial_observation)
+    evidence = fake_stack["evidence_root"] / f"identity-{observation}"
+    result = verify.main([
+        "--hermes", str(fake_stack["hermes"]),
+        "--engine-bin", str(fake_stack["engine_bin"]),
+        "--evidence-dir", str(evidence),
+        "--profile-root", str(fake_stack["profile_root"]),
+        "--command-timeout", "8",
+    ])
+    report = json.loads((evidence / "verify-report.json").read_text())
+    if observation == "exec_unreadable":
+        assert result == 0, report
+        assert report["checks"]["mcp_stored_content"]["ok"]
+    else:
+        assert result == 2, report
+        assert report["dispatches"] == []
+        assert not report["checks"]["owned_profile_isolated"]["ok"]
+    assert report["checks"]["default_profile_unchanged"]["ok"]
+    assert report["checks"]["no_owned_survivors"]["ok"]
