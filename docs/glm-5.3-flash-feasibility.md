@@ -12,7 +12,7 @@
 | Exact model exists as a downloadable artifact? | **Yes** — `zai-org/GLM-5.3-Flash`, public, ungated, MIT | HF API, revision `46a050bec13002ad29ee795c16e61cf4fa3c4a9c` |
 | Any published artifact fits 64 GiB RAM **in memory**? | **No.** Smallest verified artifact is 86.7 GiB (unsloth `UD-IQ1_S`); vendor minimum for it is 100 GB total memory | HF tree-API size sums; Unsloth official guide |
 | CPU-only local runtime exists? | **Yes, llama.cpp mainline** — arch `glm5-next`, merged 2026-09-30 (PR #27773), shipped in release `b11279` and `v0.7.0`; CPU build documented by Unsloth | GitHub API + master source inspection |
-| Disk-backed (mmap) loading viable on this box? | **Unsupported-by-evidence, not disproven.** Artifact fits free NVMe space; RAM covers KV at the Hermes-mandated context; but no vendor documents a working config at 64 GiB / 4 cores, and expected speed is unusable-unknown. **Must be measured live (ticket #4/#5)** | Budget math below |
+| Disk-backed (mmap) loading viable on this box? | **Unsupported-by-evidence, not disproven.** Artifact fits free NVMe space; config-derived KV estimate fits RAM at the Hermes-mandated context (§6.2, unmeasured, backend-dependent); but no vendor documents a working config at 64 GiB / 4 cores, and expected speed is unusable-unknown. **Must be measured live (ticket #4/#5)** | Budget math below |
 | GPU serving stacks (vLLM/SGLang/KTransformers)? | **Prerequisites not met**: they require datacenter GPUs (+350 GB RAM and AVX-512 for KTransformers) | Official vLLM recipe, SGLang cookbook, KTransformers tutorial |
 | Genuine blocker? | One: **no local throughput measurement is possible without downloading ≥86.7 GiB**, which this read-only ticket must not do. Everything else is resolved. | — |
 
@@ -41,6 +41,7 @@ Text stack (45 layers, hidden 4096, vocab 154,880, `max_position_embeddings` **1
 ## 3. Verified artifact inventory and sizes (story 3, 6)
 
 All sizes summed from the Hugging Face tree API (`/api/models/<repo>/tree/main?recursive=true`) on 2026-10-26 — these are exact byte sums of shard files, not vendor marketing figures.
+- Pinned revisions for these sums: official `zai-org/GLM-5.3-Flash` `46a050bec13002ad29ee795c16e61cf4fa3c4a9c`; community `unsloth/GLM-5.3-Flash-GGUF` `a38483c8cd5df544f53d70fb281afe97369d5ab6`. Worked example: `UD-IQ4_XS` = 5 shard files, exact sum 156,822,111,200 bytes = 146.051972 GiB (the table's 146.1 GiB rounds this). No weights were downloaded in this ticket — every size above comes from the HF tree API at the pinned revisions only.
 
 ### Official checkpoints (zai-org)
 
@@ -90,7 +91,7 @@ Every published configuration therefore exceeds this machine's 60.68 GiB of usab
 
 | Runtime | GLM-5.3-Flash support | Evidence (primary) | Runs on this machine? |
 |---|---|---|---|
-| **llama.cpp (mainline)** | **Supported**: arch `glm5-next` present in `src/llama-arch.cpp` on master; PR [#27773](https://github.com/ggml-org/llama.cpp/pull/27773) "add GLM-5.3-Flash (GLM5-Next) support" **merged 2026-09-30** (`649dcb1036fd`, "generates coherently and correctly, vision working"); shipped in release `b11279` (2026-09-30) and `v0.7.0` (2026-10-15, latest). Superseded/closed unmerged: #27752, #27754 (the "two flags required" caveat lived there and is obsolete). | GitHub API pull/commit/release records; master source fetch | **Plausible, unmeasured.** CPU build is a documented path (`-DGGML_CUDA=OFF`). Known-open upstream issues are GPU-specific: MTP not merged (#27917), Metal indexer stalls (#29867), Vulkan mmproj+MTP (#30204), Turing/Blackwell CUDA VRAM (#29950). No open CPU-correctness issue found, but no 64 GiB/4-core configuration is documented by anyone. |
+| **llama.cpp (mainline)** | **Supported**: arch `glm5-next` present in `src/llama-arch.cpp` on master; PR [#27773](https://github.com/ggml-org/llama.cpp/pull/27773) "add GLM-5.3-Flash (GLM5-Next) support" **merged 2026-09-30** (merge commit `649dcb1036fd47d01a83b56c5e35913e65c277ba`, "generates coherently and correctly, vision working"); shipped in release `b11279` (2026-09-30) and `v0.7.0` (2026-10-15, latest). Superseded/closed unmerged: #27752, #27754 (the "two flags required" caveat lived there and is obsolete). | GitHub API pull/commit/release records; master source fetch | **Plausible, unmeasured.** CPU build is a documented path (`-DGGML_CUDA=OFF`). Known-open upstream issues are GPU-specific: MTP not merged (#27917), Metal indexer stalls (#29867), Vulkan mmproj+MTP (#30204), Turing/Blackwell CUDA VRAM (#29950). No open CPU-correctness issue found, but no 64 GiB/4-core configuration is documented by anyone. |
 | llama.cpp (Unsloth fork) | Supported, with MTP ("3.3× decode") | branch `glm5next/upstream`, `unslothai/llama.cpp#61`; unsloth guide build instructions | Same hardware caveat as above |
 | **vLLM** | Supported, **GPU-only**: vLLM ≥ 0.29.0, single-node TP=8 on H100/H200/B200/GB200/GB300, AMD gfx950 (MI355X, PR #53906), Ascend 950PR ×8; "weights: about 306 GiB" FP8 | [official recipe](https://recipes.vllm.ai/zai-org/GLM-5.3-Flash) | **No** — no CUDA/ROCm GPU, no 306 GiB |
 | **SGLang** | Supported, **GPU/NPU-only**: v0.5.20+, H100/H200/B200/B300/GB200/GB300/MI355X/TPU7x/Ascend; docker default "four GPUs" | [official cookbook](https://docs.sglang.io/cookbook/autoregressive/GLM/GLM-5.3-Flash) | **No** |
@@ -129,7 +130,7 @@ Per-token costs: 11 DSA layers × (MLA compressed KV 512×2 B = 1 KiB + indexer 
 
 Vendor cross-checks (implementation-specific pool sizing, not per-token math): vLLM recipe reports a 14.92M-token KV pool at TP4/128K on MI355X; SGLang splits GPU memory between KV and KDA state pools via `--mamba-full-memory-ratio 0.9`.
 
-**Conclusion:** KV/runtime memory is **not** the binding constraint — even at the Hermes-mandated 64K floor, KV + state ≤ 6.3 GiB, comfortably inside RAM. The binding constraint is weights residency (§6.1) and, under mmap, weight paging (§6.3).
+**Conclusion:** KV/runtime memory is **not proven** to be the binding constraint — at the Hermes-mandated 64K floor the config-derived estimate is KV + state ≤ 6.3 GiB, inside RAM. That figure is a hand-computed `[INFERENCE]` from `config.json` dimensions, **not a measured allocation**: actual usage is backend-dependent (llama.cpp pool sizing, quantized-vs-F16 cache storage, and mmap bookkeeping all differ from this arithmetic) and **must be confirmed by reading real allocator output during the #4/#5 live smoke**. The verified binding constraints are weights residency (§6.1) and, under mmap, weight paging (§6.3).
 
 ### 6.3 Disk-backed (mmap) loading — the only candidate path
 
@@ -137,7 +138,7 @@ llama.cpp default-loads GGUF via `mmap`, so the OS page cache streams weights fr
 
 - **Disk space**: 86.7 GiB (UD-IQ1_S) fits the 286.1 GiB free on `/` with headroom for a second quant; the 112 GiB UD-IQ3_XXS (better fidelity) also fits. RAID1 HDD is unsuitable for paging (rotational + degraded).
 - **Paging volume per generated token** `[INFERENCE]`: 8 routed experts × 42 MoE layers = 336 expert-FFN reads/token; each expert ≈ 3×2048×4096 params ≈ 25.2 M params ≈ ~6.9 MiB at IQ1-class bitrates → worst case **~2 GiB of random reads per token** before inter-token page-cache reuse. The governing metric is **QD1 random 4 KiB read latency, not sequential throughput** (MoE routing touches scattered pages across the whole 86.7+ GiB file; the file cannot be fully cached: 86.7 GiB > ~55 GiB cacheable).
-- **Expected speed**: **unknown and likely unusable for interactive tool-calling** `[INFERENCE]`. For scale only: Unsloth's measured 62.79 t/s decode @4096 ctx for UD-IQ1_S was on ≥100 GB-class hardware with MTP (their guide); this machine has 60% of that RAM, a quarter of the threads, and no MTP upstream. No source documents a working 64 GiB / 4-core / AVX2 configuration.
+- **Expected speed**: **unknown and likely unusable for interactive tool-calling** `[INFERENCE]`. The only vendor throughput figure, Unsloth's 62.79 t/s decode for UD-IQ1_S, is a **GPU measurement on 1× B200 at baseline tg32, no MTP** (their guide's results table) — it is **not a CPU figure, and no CPU inference speed can be inferred from it**. This machine has 4 AVX2-only cores and no MTP upstream. No source documents a working 64 GiB / 4-core / AVX2 configuration.
 - **Swap**: the 8 GiB swap file adds nothing for mmap'd weights (the page cache already provides paging; swapping anonymous compute buffers only adds latency).
 - This ticket could not measure local throughput — that requires the ≥86.7 GiB download and is deferred to the ticket #4/#5 live smoke, which must treat "slow but functional" as the success bar and record honest t/s numbers.
 
@@ -145,16 +146,16 @@ llama.cpp default-loads GGUF via `mmap`, so the OS page cache streams weights fr
 
 - Intel HD 530 shares system DRAM (256 MiB aperture); it cannot host any artifact (smallest 86.7 GiB) and adds no capacity beyond the 60.68 GiB already counted.
 - llama.cpp GPU backends relevant here: Vulkan — glm5-next support **unverified**, with an open mmproj+MTP failure issue (#30204); SYCL/i915 — no glm5-next evidence found. Neither would change the weights-residency arithmetic.
-- All officially supported GPU stacks (vLLM, SGLang, KTransformers) require H100-class / MI355X / RTX 40-50 hardware (§4). **No acceleration path exists on this machine; CPU+mmap is the only candidate.**
+- All officially supported GPU stacks (vLLM, SGLang, KTransformers) require H100-class / MI355X / RTX 40-50 hardware (§4). **No acceleration path is verified on this machine** — Vulkan and SYCL glm5-next support is *unverified, not disproven* — so **CPU+mmap is the only verified candidate**; even a working Vulkan/SYCL backend would not change the weights-residency arithmetic above.
 
 ## 8. Hermes v0.22.5 integration contract (input for ticket #4)
 
 From the pinned Hermes source (`v0.22.5`, commit `bf0203a7`, `/home/a1234/.cache/hermes-context-mode/hermes-agent`):
 
-- **Hard context floor: `MINIMUM_CONTEXT_LENGTH = 64_000`** (`agent/model_metadata.py:274`). Enforced at startup (`agent/agent_init.py:2069–2090`) — a local model below 64K is rejected, and the error message itself prescribes the llama.cpp remedy: **`-c 64000`** (also vLLM `--max-model-len`, Ollama `OLLAMA_CONTEXT_LENGTH`). An explicit below-floor escape exists only for LM Studio profiles. Consequence: run llama-server with `-c 65536`, KV cost ≈ ≤6.3 GiB (§6.2).
+- **Hard context floor: `MINIMUM_CONTEXT_LENGTH = 64_000`** (`agent/model_metadata.py:274`). Enforced at startup (`agent/agent_init.py:2069–2090`) — a local model below 64K is rejected, and the error message itself prescribes the llama.cpp remedy: **`-c 64000`** (also vLLM `--max-model-len`, Ollama `OLLAMA_CONTEXT_LENGTH`). An explicit below-floor escape exists only for LM Studio profiles. Consequence: run llama-server with `-c 65536`, KV cost ≈ ≤6.3 GiB by the §6.2 config-derived estimate (confirm the real allocation in #4/#5).
 - **Transport**: OpenAI-compatible `chat.completions` with `tools` (e.g. `trajectory_compressor.py:467`, auxiliary relay). Provider profiles accept `base_url` + `api_key` (`providers/base.py:63–64,158`), so `llama-server`'s `/v1` endpoint slots in as a provider; per-model context length comes from the provider hook `get_model_context_length` or the profile `context_length` setting, which caps the detected value (`cli-config.yaml.example:135–145`).
 - **Reasoning effort**: model exposes low/high/max via chat-template kwargs (vLLM recipe: `chat_template_kwargs.reasoning_effort`; llama.cpp: `--chat-template-kwargs`). Server-side parsers used by GPU stacks: `--tool-call-parser glm47`, `--reasoning-parser glm47/glm45`.
-- **Sizing reality check**: parent-spec observed Hermes sessions grew to 19,578–76,435 tokens (largest artifact 266,674-byte JSON) — consistent with the 64K floor being genuinely needed, not padding.
+- **Sizing reality check**: the parent spec's observed Hermes figures — 19,578–76,435 total request bytes, largest single artifact a 266,674-byte JSON — are **byte totals, not token counts**, and no per-request history was provided, so they do not establish that sessions approach 64K *tokens*. The 64K floor binds because Hermes enforces it (`MINIMUM_CONTEXT_LENGTH`), not because observed session sizes were shown to need it.
 
 ## 9. License and redistribution (story 3)
 
@@ -163,7 +164,7 @@ MIT on the official checkpoint (and the GLM-5 repo). Distribution of quantized c
 ## 10. Decision inputs and honest blockers
 
 1. **In-memory execution: infeasible** on this machine for every published artifact of this exact model (arithmetic, §6.1). Not fixable by quant choice within the published set.
-2. **CPU + NVMe mmap via llama.cpp b11279+/v0.7.0 (or unsloth fork): the only candidate**. Artifact fits disk; KV fits RAM at the Hermes 64K floor; runtime support is merged and CPU builds are documented. **No evidence any 64 GiB / 4-core machine has run it**; expected interactive latency is poor-to-unknown. The feasibility decision therefore hinges on the ticket #4/#5 live measurement (download once, measure t/s and tool-call correctness at `-c 65536`), which this read-only ticket deliberately did not perform.
+2. **CPU + NVMe mmap via llama.cpp b11279+/v0.7.0 (or unsloth fork): the only candidate**. Artifact fits disk; KV fits RAM at the Hermes 64K floor **by the §6.2 config-derived estimate (unmeasured, backend-dependent)**; runtime support is merged and CPU builds are documented. **No evidence any 64 GiB / 4-core machine has run it**; expected interactive latency is poor-to-unknown. The feasibility decision therefore hinges on the ticket #4/#5 live measurement (download once, measure t/s, tool-call correctness, and the real KV allocation at `-c 65536`), which this read-only ticket deliberately did not perform.
 3. **GPU stacks: excluded** by prerequisites (§4, §7). **Cloud API and alternate models: excluded by spec.**
 4. Genuine blocker encountered in this ticket: **none unresolved** — the only unverifiable-by-design item is local throughput, whose prerequisite (86.7 GiB download, live smoke) is owned by tickets #4/#5.
 5. Secondary sources (codersera, atomic.chat, modemguides blogs) were used only as leads; every load-bearing claim above is pinned to a primary source.
@@ -177,7 +178,7 @@ Primary (all fetched 2026-10-26):
 3. HF tree APIs (exact sizes): `/api/models/{zai-org/GLM-5.3-Flash, zai-org/GLM-5.3-Flash-BF16, unsloth/GLM-5.3-Flash-GGUF, nvidia/GLM-5.3-Flash-FP4-Local, vcruz305/GLM-5.3-Flash-GGUF}/tree/main?recursive=true`
 4. z.ai blog: https://z.ai/blog/glm-5.3-flash · arXiv: https://arxiv.org/abs/2602.15763 · ModelScope: https://www.modelscope.cn/models/ZhipuAI/GLM-5.3-Flash
 5. Unsloth official guide (memory floors, quant table, fork build): https://unsloth.ai/docs/models/glm-5.3-flash
-6. llama.cpp: PR #27773 (merged 2026-09-30); master `src/llama-arch.cpp` (`glm5-next`); releases `b11279`, `v0.7.0`; open #27917, #29867, #29950, #30204; closed #27752, #27754; unslothai/llama.cpp#61 (branch `glm5next/upstream`)
+6. llama.cpp: PR #27773 (merged 2026-09-30, merge commit `649dcb1036fd47d01a83b56c5e35913e65c277ba`); master `src/llama-arch.cpp` (`glm5-next`); releases `b11279`, `v0.7.0`; open #27917, #29867, #29950, #30204; closed #27752, #27754; unslothai/llama.cpp#61 (branch `glm5next/upstream`)
 7. vLLM recipe: https://recipes.vllm.ai/zai-org/GLM-5.3-Flash
 8. SGLang cookbook: https://docs.sglang.io/cookbook/autoregressive/GLM/GLM-5.3-Flash
 9. KTransformers tutorial: https://github.com/kvcache-ai/ktransformers/blob/main/doc/en/kt-kernel/GLM-5.3-Flash-Tutorial.md
