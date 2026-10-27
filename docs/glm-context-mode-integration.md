@@ -29,8 +29,12 @@ command, without forced interruption or process-group signals.
 Its recovery controller uses the public structured single-query terminal result
 for model completion, then a native conversation export; it never treats silent
 CPU prefill or terminal prompt decorations as completion. Recovery evidence is
-under `/home/a1234/.cache/hermes-context-mode/evidence/ticket-5/recovery-xvq8ulja/`.
-This document does not claim the pending cycle passed.
+under `/home/a1234/.cache/hermes-context-mode/evidence/ticket-5/recovery2-5ae87af0/`.
+The earlier `recovery-xvq8ulja` failure is retained: session purge intentionally
+removed its session-owned indexed chunks, contrary to that controller's
+expectation. The corrected retention fixture is indexed **before** removal;
+there is no re-indexing after removal. This document does not claim the pending
+cycle passed.
 
 Native Hermes compression remains in control. Real-model continuity and paired
 net-benefit measurements remain separate acceptance gates. Existing controlled
@@ -89,8 +93,8 @@ preserve their annotated limitation instead of claiming every check is green.
 - `/ctx-search independent-phrase --source notes` — retrieve indexed content.
 - `/ctx-upgrade`, then `/ctx-upgrade confirm` — operator-controlled upgrade.
 - `/ctx-purge session`, then `/ctx-purge session <id> confirm` — irreversible
-  deletion of the explicitly selected session's captured events. Project purge
-  is broader; do not use it as an uninstall command.
+  deletion of the explicitly selected session's captured events **and its
+  indexed chunks**. Project purge is broader. Neither is an uninstall command.
 - `/ctx-insight` — explanation only; `/ctx-insight open` explicitly requests the
   hosted dashboard. Do not opt in automatically.
 
