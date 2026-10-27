@@ -115,25 +115,122 @@ def configure(home: Path, binary: Path) -> dict:
         reset_hermes_home_override(token)
 
 
+def remove(home: Path) -> dict:
+    """Remove the context-mode registration from one explicitly selected Hermes home.
+
+    Configuration-only by contract: no engine/Node/npm access, no network, no
+    data deletion. The CURRENT config is rewritten through Hermes's atomic
+    configuration writer so settings changed after installation survive (never
+    a stale pre-install snapshot rollback); a verified current
+    recovery copy is taken via Hermes' native config-backup helper before the
+    rewrite and removal fails closed without one; the engine runtime, indexed
+    content, captured sessions, the pre-install backup and the installed
+    adapter package are all retained, and other profiles are never touched.
+    A profile without a prior integration is a successful no-op that writes
+    nothing.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_cli.config import get_config_path, require_readable_config_before_write, save_config
+
+    home = home.expanduser().resolve()
+    token = set_hermes_home_override(home)
+    try:
+        try:
+            original = require_readable_config_before_write(get_config_path())
+        except (RuntimeError, OSError) as exc:
+            raise EngineError(
+                f"Refusing to remove from an unreadable/malformed config.yaml ({exc}); "
+                "nothing was changed") from exc
+        config = copy.deepcopy(original)
+        plugins = config.get("plugins", {})
+        servers = config.get("mcp_servers", {})
+        if not isinstance(plugins, dict):
+            raise EngineError("plugins must be a mapping; existing configuration was not changed")
+        if not isinstance(servers, dict):
+            raise EngineError("mcp_servers must be a mapping; existing configuration was not changed")
+        enabled, disabled = plugins.get("enabled", []), plugins.get("disabled", [])
+        entries = plugins.get("entries", {})
+        if not isinstance(enabled, list) or not isinstance(disabled, list) or not isinstance(entries, dict):
+            raise EngineError(
+                "plugins.enabled/disabled must be lists and plugins.entries a mapping; "
+                "existing configuration was not changed")
+        removed = {"enabled": "context-mode" in enabled, "disabled": "context-mode" in disabled,
+                   "plugin_entry": "context-mode" in entries, "mcp_server": "context-mode" in servers}
+        if removed["enabled"]:
+            plugins["enabled"] = [name for name in enabled if name != "context-mode"]
+        if removed["disabled"]:
+            plugins["disabled"] = [name for name in disabled if name != "context-mode"]
+        if removed["plugin_entry"]:
+            del entries["context-mode"]
+        if removed["mcp_server"]:
+            del servers["context-mode"]
+        changed = config != original
+        recovery_backup = None
+        if changed:
+            from hermes_cli.config_backups import backup_config, list_config_backups
+
+            config_path = get_config_path()
+            recovery_backup = backup_config(config_path, "context-mode-removal", keep=5)
+            if recovery_backup is None:
+                # The helper returns None both when the newest same-reason backup
+                # already holds identical bytes (recoverable) and when it failed
+                # (not recoverable). Distinguish, and fail before any mutation.
+                newest = list_config_backups(config_path, "context-mode-removal")
+                if not newest or newest[0].read_bytes() != config_path.read_bytes():
+                    raise EngineError(
+                        "no verified current recovery copy of config.yaml could be "
+                        "created; refusing to rewrite the configuration; nothing "
+                        "was changed")
+                recovery_backup = newest[0]
+            save_config(config, strip_defaults=False)
+        entry = entries.get("context-mode") if isinstance(entries.get("context-mode"), dict) else {}
+        settings = entry.get("settings") if isinstance(entry.get("settings"), dict) else {}
+        return {"home": str(home), "changed": changed, "removed": removed,
+                "retained": {"storage_dir": settings.get("storage_dir") or str(home / "context-mode"),
+                             "engine_binary": settings.get("engine_binary"),
+                             "host_dir": str(home / "context-mode-host"),
+                             "pre_install_backup": str(home / "config.yaml.before-context-mode")},
+                "recovery_backup": str(recovery_backup) if recovery_backup is not None else None,
+                "adapter": "kept installed; removal is configuration-only"}
+    finally:
+        reset_hermes_home_override(token)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--home", required=True, type=Path, help="Explicit target Hermes profile directory")
     parser.add_argument("--engine-bin", type=Path, help="Existing context-mode 1.0.169 executable")
     parser.add_argument("--install-engine", action="store_true", help="Install the pinned npm engine inside this profile")
+    parser.add_argument("--remove", action="store_true",
+                        help="Remove the context-mode registration from --home "
+                             "(configuration-only: engine, data and adapter are retained)")
     args = parser.parse_args(argv)
+    if args.install_engine and args.engine_bin:
+        parser.error("--engine-bin and --install-engine are mutually exclusive")
+    if args.remove and (args.install_engine or args.engine_bin):
+        parser.error("--remove is configuration-only and excludes --install-engine/--engine-bin")
     home = args.home.expanduser().resolve()
-    prefix = home / "context-mode-runtime"
-    binary = args.engine_bin or prefix / "node_modules" / ".bin" / "context-mode"
     try:
+        if args.remove:
+            result = remove(home)
+            print(json.dumps(result, indent=2))
+            print("Restart this profile's Hermes gateway to complete removal: running gateways keep their "
+                  "in-process state (hooks, /ctx-* commands, MCP tools) until they restart; new sessions start "
+                  "native Hermes.")
+            print("Configuration-only removal: engine runtime, indexed content, captured sessions and the adapter "
+                  "package were retained. Re-enable any time with the same --home; no npm/network is needed while "
+                  "the retained engine is reused.")
+            return 0
+        prefix = home / "context-mode-runtime"
+        binary = args.engine_bin or prefix / "node_modules" / ".bin" / "context-mode"
         if args.install_engine:
-            if args.engine_bin:
-                parser.error("--engine-bin and --install-engine are mutually exclusive")
             installed = install_runtime(prefix)
             if installed.returncode:
                 raise EngineError(installed.stdout + installed.stderr)
         result = configure(home, binary)
     except (EngineError, OSError, subprocess.SubprocessError, ImportError) as exc:
-        print(f"context-mode installation failed: {exc}", file=sys.stderr)
+        label = "removal" if args.remove else "installation"
+        print(f"context-mode {label} failed: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(result, indent=2))
     print("Restart this profile's Hermes gateway. Validate /ctx-doctor, routing and compaction before relying on it.")

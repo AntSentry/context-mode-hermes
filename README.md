@@ -164,6 +164,7 @@ Evidence: [`benchmarks/results/runtime-cli-evidence.tar.gz`](benchmarks/results/
 
 - `tests/test_lifecycle.py` — real plugin registration on the pinned `PluginContext`/`PluginManager`, real Hermes dispatch seams, real engine subprocesses, assertions against the actual per-project session DB.
 - `tests/test_engine_contract.py`, `tests/test_install_contract.py`, `tests/test_mcp_proxy_contract.py`, `tests/test_native_hermes_contract.py`, `tests/test_commands.py` — engine CLI contract, installer output/config, proxy protocol, native Hermes integration, and slash-command behavior against the real engine.
+- `tests/test_removal_contract.py` — `--remove` contract: configuration-only removal preserving later-edited settings/data, no engine/Node/npm needed, no-op and refusal exit statuses, offline install→remove→re-enable with retained searchable content.
 
 ## Hosted CI
 
@@ -178,13 +179,19 @@ Both jobs use only a read-only `contents: read` token; the workflow holds no sec
 
 Hosted CI proves packaging and adapter integration behavior only. It runs no model, no benchmark and no hardware-specific measurement: GLM runtime, continuity and benefit evidence is the separate local reporting under [Measured results](#measured-results), and a green pipeline is not a real-model benefit claim. Hosted run links for the published integration branch and its PR are recorded by the maintainer in [issue #8](https://github.com/AntSentry/context-mode-hermes/issues/8).
 
-## Uninstall / rollback
+## Removal & reversibility
 
 ```bash
-# restore the pre-install config and restart the gateway
-cp <home>/config.yaml.before-context-mode <home>/config.yaml
+/path/to/hermes-agent/.venv/bin/context-mode-hermes --home /path/to/hermes-profile --remove
+```
 
-# optionally remove the plugin from the venv and delete the profile-owned dirs
+`--remove` is mutually exclusive with `--install-engine`/`--engine-bin` and needs neither the engine nor Node/npm nor network access. It removes only this profile's registration — the `context-mode` plugin entry (and its `plugins.enabled`/`plugins.disabled` mentions) and the `context-mode` MCP server — rewriting the **current** `config.yaml` through Hermes' atomic writer, so settings changed after installation (model/provider, unrelated plugins, other MCP servers, other profiles) are preserved rather than rolled back to the pre-install snapshot. Before the rewrite, Hermes' native config-backup helper stores a verified current recovery copy under `<home>/backups/config/` (`config.yaml.context-mode-removal.<timestamp>`, newest five kept; if the newest copy already matches byte-for-byte it is reused); if no verified copy can be created, removal fails (exit 1) without touching the file. It never deletes the engine/data locations recorded at install — by default `<home>/context-mode` (indexed knowledge, captured sessions), `<home>/context-mode-runtime`, `<home>/context-mode-host`, plus `config.yaml.before-context-mode` — or the installed adapter package. A profile without a prior integration is a successful no-op that writes nothing; an unreadable/malformed `config.yaml` makes removal fail (exit 1) without touching the file. Restart the profile's gateway to finish removal: running gateways keep hooks, `/ctx-*` commands and MCP tools in-process until they restart; new sessions start native Hermes with none of them.
+
+Re-enable later with the ordinary install command for the same `--home`; the retained engine is reused (no npm/network needed) and previously indexed content and captured sessions are reachable without re-indexing.
+
+To additionally drop the retained data or the adapter — explicit, destructive, operator-owned choices the removal above deliberately never makes:
+
+```bash
 uv pip uninstall --python <pinned-hermes-venv>/bin/python context-mode-hermes
 rm -rf <home>/context-mode <home>/context-mode-runtime <home>/context-mode-host
 ```
