@@ -19,11 +19,16 @@ What it does **not** do:
 - **The complete context-mode real-model acceptance has not yet passed.** The exact local GLM-5.3-Flash has completed both a native tool baseline and a context-mode search workflow with an independently verified final answer. Working-profile removal/native-use/re-enable, context continuity and paired net benefit remain separate gates; a completed search does not establish a quality, speed or context-cost improvement.
 - **It is not a security sandbox.** See [Security & isolation](#security--isolation).
 
-**Current model transition:** the owner requested GLM removal. Its validation
-was cancelled, the gateway/model server stopped, and the 146.05 GiB weight set
-deleted. Hermes, context-mode and indexed data are retained. A fresh Qwen-family
-comparison precedes any replacement-model download; the GLM guides below are
-historical evidence, not the active launch procedure.
+**Current local model:** the owner requested GLM removal; its unfinished validation
+was cancelled and its 146.05 GiB weight set deleted. Fresh [Qwen research](docs/qwen-selection.md)
+selected **Qwen3.8-27B Q8_0** (26.63 GiB) for the native Hermes CPU runtime.
+Hermes, context-mode and indexed data are retained. See the
+[Qwen launch/removal guide](docs/qwen-local-runtime.md); the GLM guides below
+are historical evidence, not active launch procedures.
+The Qwen download, direct inference, interactive context-mode commands and
+configuration-only removal/re-enable were exercised. The model-driven Hermes
+tool turn **did not complete within 16 minutes**; native prompt processing was
+still in progress. Installation is not an end-to-end usability or improvement claim.
 
 **Local GLM baseline on the 5040:** [artifact, launch, stop and measured runtime evidence](docs/glm-5.3-flash-local-runtime.md). The verified warm-cache tool turn took about 98 minutes; it read about 1.70 TB during the window. Slow disk-backed execution is demonstrated, not practical responsiveness or a context-mode improvement.
 
