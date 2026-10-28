@@ -1,0 +1,24 @@
+{
+  "archive": "glm-local-runtime-evidence.tar.gz",
+  "archive_sha256": "5d095e9d0736341f1f74deefe7f86baa9122b972954ac67d58175d0be6e95678",
+  "reviewed_at_utc": "2026-10-27T20:54:36.377008+00:00",
+  "entries": 215,
+  "actual_loopback_key_values_checked": 5,
+  "secret_leak_members": [],
+  "vendored_skill_entries": 0,
+  "proof_fixture_members": 5,
+  "provenance_correction_present": true,
+  "review_validation_members": [
+    "glm-evidence-sanitized/review-validation/engine-identity-guard-smoke.json",
+    "glm-evidence-sanitized/review-validation/failed-cycle-cleanup-smoke-before.json",
+    "glm-evidence-sanitized/review-validation/failed-cycle-cleanup-smoke.json"
+  ],
+  "historical_failed_review": {
+    "member": "glm-evidence-sanitized/archive-redaction-review.json",
+    "reviews_archive_sha256": "cdbc9cf10ea8c4963b0b44634451d31ba594c1ae536a20637cda876a98984bd0",
+    "status": "Retained failed historical scan; not the verdict on this archive"
+  },
+  "supersedes_publication_sha256": "d7df692302113c567d777481ad32d2dd187608a00403cb613cfcf5b05516b0fb",
+  "accepted_for_publication": true,
+  "scope": "Literal-value scan against actual known loopback keys; proof codewords retained. Detached record avoids archive self-hash circularity."
+}

@@ -1,0 +1,581 @@
+{
+  "label": "context-mode Hermes controlled-provider benchmark",
+  "disclaimer": "Scripted OpenAI-compatible fake provider on loopback; deterministic scripted turns; measures wire request bytes, rough token estimates and native dispatch. NOT an LLM benchmark; no quality or speed claims.",
+  "run_id": "20261027T102217-8cb7c2",
+  "generated": "2026-10-27T10:22:17.613491+00:00",
+  "environment": {
+    "hermes_python": "/home/a1234/.cache/hermes-context-mode/hermes-agent/.venv/bin/python",
+    "engine_bin": "/home/a1234/.local/share/hermes-context-mode-validation/home/context-mode-runtime/node_modules/.bin/context-mode",
+    "engine_version": "1.0.169",
+    "node_version": "v22.23.2",
+    "fixture": {
+      "count": 4546,
+      "sum": 2279940,
+      "bytes": 266674
+    },
+    "workloads": [
+      "small",
+      "large"
+    ],
+    "arms": [
+      "baseline",
+      "plugin"
+    ],
+    "approvals_mode": "off (all arms, unattended benchmark)",
+    "compressor": "native default (all arms)",
+    "probe_untrusted_context": false,
+    "provider_base_url": "http://127.0.0.1:44189/v1",
+    "advertised_context_length": 65536
+  },
+  "fairness": [
+    "All arms run the real pinned Hermes AIAgent with the native ContextCompressor enabled, default tool output caps and native terminal spill files; nothing is disabled to force a win.",
+    "The provider is a scripted, deterministic OpenAI-compatible fake on 127.0.0.1. It is NOT a model: no LLM quality or speed claims are possible from this benchmark.",
+    "The same scripted turn logic runs in every arm and reacts only to actual request content (advertised tools, actual tool results). The baseline aggregation is equally efficient native python3 \u2014 no strawman 'baseline cannot aggregate' setup.",
+    "Wire bytes and rough token estimates include tool schemas and any injected plugin guidance, for every scripted request; auxiliary requests are counted separately.",
+    "estimate_request_tokens_rough is Hermes's own explicit rough estimate (not real model tokens).",
+    "Approvals are 'off' in ALL arms because the benchmark is unattended; the only non-default setting and identical across arms.",
+    "Native progressive tool disclosure (tool_search/tool_describe/tool_call bridge) stays at its defaults in every arm; when Hermes defers the ctx tools the scripted provider walks the bridge exactly like a real model would, so schema costs are measured as actually shipped.",
+    "Numbers are reported as measured. A negative net result for the ctx arms (schema/guidance overhead exceeding compaction savings) is a valid outcome, never adjusted post hoc."
+  ],
+  "profiles": {
+    "baseline": {
+      "home": "/tmp/cm-bench-20261027T102217-8cb7c2-2du89mde/home-baseline",
+      "plugins_enabled": [],
+      "context_mode_settings": {},
+      "context_mode_allowlist": [],
+      "mcp_servers": {}
+    },
+    "plugin": {
+      "home": "/tmp/cm-bench-20261027T102217-8cb7c2-2du89mde/home-plugin",
+      "plugins_enabled": [
+        "context-mode"
+      ],
+      "context_mode_settings": {
+        "engine_binary": "/home/a1234/.local/share/hermes-context-mode-validation/home/context-mode-runtime/node_modules/.bin/context-mode",
+        "storage_dir": "/tmp/cm-bench-20261027T102217-8cb7c2-2du89mde/home-plugin/context-mode"
+      },
+      "context_mode_allowlist": [
+        "context-mode"
+      ],
+      "mcp_servers": {
+        "context-mode": {
+          "command": "/home/a1234/.cache/hermes-context-mode/hermes-agent/.venv/bin/python",
+          "args": [
+            "-m",
+            "context_mode_hermes.mcp_proxy",
+            "--engine-bin",
+            "/home/a1234/.local/share/hermes-context-mode-validation/home/context-mode-runtime/node_modules/.bin/context-mode"
+          ]
+        }
+      }
+    }
+  },
+  "install": {
+    "home": "/tmp/cm-bench-20261027T102217-8cb7c2-2du89mde/home-plugin",
+    "engine": "/home/a1234/.local/share/hermes-context-mode-validation/home/context-mode-runtime/node_modules/.bin/context-mode",
+    "engine_version": "1.0.169",
+    "changed": true,
+    "backup": "/tmp/cm-bench-20261027T102217-8cb7c2-2du89mde/home-plugin/config.yaml.before-context-mode",
+    "configured": true
+  },
+  "runs": {
+    "small": {
+      "workload": "small",
+      "baseline": {
+        "arm": "baseline",
+        "workload": "small",
+        "run_key": "20261027T102217-8cb7c2.baseline.small",
+        "session_id": "cm-bench-20261027T102217-8cb7c2-baseline-small",
+        "child_ok": true,
+        "child_error": null,
+        "child_traceback": null,
+        "completed": true,
+        "wall_s": 4.328,
+        "child_wall_s": 8.517,
+        "final_text": "NONCE=CM-BENCH-NONCE-0f71b5da98934899",
+        "tool_calls": [
+          {
+            "name": "terminal",
+            "arguments_head": "{\"command\": \"printf 'CM-BENCH-NONCE-0f71b5da98934899'\"}"
+          }
+        ],
+        "n_agent_tools": 4,
+        "ctx_tools_advertised": [],
+        "effective_context_length": 0,
+        "mcp_discovery": "ok",
+        "cleanup_errors": null,
+        "strays_killed": [],
+        "requests_scripted": 2,
+        "requests_auxiliary": 0,
+        "auxiliary_body_bytes": 0,
+        "total_body_bytes": 19738,
+        "total_rough_tokens": 4722,
+        "per_request": [
+          {
+            "body_bytes": 9701,
+            "rough_tokens": 2318,
+            "n_tools": 4,
+            "tool_names": [
+              "terminal",
+              "tool_search",
+              "tool_describe",
+              "tool_call"
+            ],
+            "n_messages": 2,
+            "tool_result_chars": 0,
+            "truncation_notes": 0,
+            "spill_handles": 0,
+            "plugin_guidance_marker": false,
+            "reply_kind": "tool_calls"
+          },
+          {
+            "body_bytes": 10037,
+            "rough_tokens": 2404,
+            "n_tools": 4,
+            "tool_names": [
+              "terminal",
+              "tool_search",
+              "tool_describe",
+              "tool_call"
+            ],
+            "n_messages": 4,
+            "tool_result_chars": 76,
+            "truncation_notes": 0,
+            "spill_handles": 0,
+            "plugin_guidance_marker": false,
+            "reply_kind": "final"
+          }
+        ],
+        "provider_script_log": [
+          {
+            "event": "tool_call",
+            "tool": "terminal",
+            "command": "printf 'CM-BENCH-NONCE-0f71b5da98934899'"
+          },
+          {
+            "event": "final",
+            "nonce": "CM-BENCH-NONCE-0f71b5da98934899",
+            "source": "tool_result"
+          }
+        ],
+        "probe_untrusted_context": false,
+        "correct": true
+      },
+      "plugin": {
+        "arm": "plugin",
+        "workload": "small",
+        "run_key": "20261027T102217-8cb7c2.plugin.small",
+        "session_id": "cm-bench-20261027T102217-8cb7c2-plugin-small",
+        "child_ok": true,
+        "child_error": null,
+        "child_traceback": null,
+        "completed": true,
+        "wall_s": 2.806,
+        "child_wall_s": 8.004,
+        "final_text": "NONCE=CM-BENCH-NONCE-05ab88c89a484250",
+        "tool_calls": [
+          {
+            "name": "terminal",
+            "arguments_head": "{\"command\": \"printf 'CM-BENCH-NONCE-05ab88c89a484250'\"}"
+          }
+        ],
+        "n_agent_tools": 4,
+        "ctx_tools_advertised": [],
+        "effective_context_length": 0,
+        "mcp_discovery": "ok",
+        "cleanup_errors": null,
+        "strays_killed": [],
+        "requests_scripted": 2,
+        "requests_auxiliary": 0,
+        "auxiliary_body_bytes": 0,
+        "total_body_bytes": 22662,
+        "total_rough_tokens": 5440,
+        "per_request": [
+          {
+            "body_bytes": 11162,
+            "rough_tokens": 2677,
+            "n_tools": 4,
+            "tool_names": [
+              "terminal",
+              "tool_search",
+              "tool_describe",
+              "tool_call"
+            ],
+            "n_messages": 2,
+            "tool_result_chars": 0,
+            "truncation_notes": 0,
+            "spill_handles": 0,
+            "plugin_guidance_marker": true,
+            "reply_kind": "tool_calls"
+          },
+          {
+            "body_bytes": 11500,
+            "rough_tokens": 2763,
+            "n_tools": 4,
+            "tool_names": [
+              "terminal",
+              "tool_search",
+              "tool_describe",
+              "tool_call"
+            ],
+            "n_messages": 4,
+            "tool_result_chars": 76,
+            "truncation_notes": 0,
+            "spill_handles": 0,
+            "plugin_guidance_marker": true,
+            "reply_kind": "final"
+          }
+        ],
+        "provider_script_log": [
+          {
+            "event": "tool_call",
+            "tool": "terminal",
+            "command": "printf 'CM-BENCH-NONCE-05ab88c89a484250'"
+          },
+          {
+            "event": "final",
+            "nonce": "CM-BENCH-NONCE-05ab88c89a484250",
+            "source": "tool_result"
+          }
+        ],
+        "probe_untrusted_context": false,
+        "correct": true
+      },
+      "delta_plugin_minus_baseline": {
+        "total_body_bytes": 2924,
+        "total_rough_tokens": 718,
+        "requests_scripted": 0,
+        "wall_s": -1.522
+      }
+    },
+    "large": {
+      "workload": "large",
+      "baseline": {
+        "arm": "baseline",
+        "workload": "large",
+        "run_key": "20261027T102217-8cb7c2.baseline.large",
+        "session_id": "cm-bench-20261027T102217-8cb7c2-baseline-large",
+        "child_ok": true,
+        "child_error": null,
+        "child_traceback": null,
+        "completed": true,
+        "wall_s": 3.947,
+        "child_wall_s": 6.764,
+        "final_text": "COUNT=4546 SUM=2279940",
+        "tool_calls": [
+          {
+            "name": "terminal",
+            "arguments_head": "{\"command\": \"curl -sS http://127.0.0.1:44189/fixture.json\"}"
+          },
+          {
+            "name": "tool_search",
+            "arguments_head": "{\"queries\": [\"context execute python code file json aggregate\"], \"limit\": 8}"
+          },
+          {
+            "name": "terminal",
+            "arguments_head": "{\"command\": \"python3 -c 'import json\\nraw=open('\\\\''/tmp/cm-bench-20261027T102217-8cb7c2-2du89mde/home-baseline/cache/spillover/call_bench_22.txt'\\\\'').read()\\nimport json\\np=lambda t: json.JSONDecoder(strict=False).raw_decode(t.strip())[0]\\nd=p(raw)\\nd=p(open(d['\\\\''full_output_path'\\\\'']).read()) if isinstance(d,dict) and '\\\\''records'\\\\'' not in d and '\\\\''full_output_path'\\\\'' in d else d\\nd=p"
+          }
+        ],
+        "n_agent_tools": 4,
+        "ctx_tools_advertised": [],
+        "effective_context_length": 0,
+        "mcp_discovery": "ok",
+        "cleanup_errors": null,
+        "strays_killed": [],
+        "requests_scripted": 4,
+        "requests_auxiliary": 0,
+        "auxiliary_body_bytes": 0,
+        "total_body_bytes": 50207,
+        "total_rough_tokens": 12002,
+        "per_request": [
+          {
+            "body_bytes": 9809,
+            "rough_tokens": 2345,
+            "n_tools": 4,
+            "tool_names": [
+              "terminal",
+              "tool_search",
+              "tool_describe",
+              "tool_call"
+            ],
+            "n_messages": 2,
+            "tool_result_chars": 0,
+            "truncation_notes": 0,
+            "spill_handles": 0,
+            "plugin_guidance_marker": false,
+            "reply_kind": "tool_calls"
+          },
+          {
+            "body_bytes": 12632,
+            "rough_tokens": 3008,
+            "n_tools": 4,
+            "tool_names": [
+              "terminal",
+              "tool_search",
+              "tool_describe",
+              "tool_call"
+            ],
+            "n_messages": 4,
+            "tool_result_chars": 2179,
+            "truncation_notes": 1,
+            "spill_handles": 1,
+            "plugin_guidance_marker": false,
+            "reply_kind": "tool_calls"
+          },
+          {
+            "body_bytes": 13432,
+            "rough_tokens": 3204,
+            "n_tools": 4,
+            "tool_names": [
+              "terminal",
+              "tool_search",
+              "tool_describe",
+              "tool_call"
+            ],
+            "n_messages": 6,
+            "tool_result_chars": 2673,
+            "truncation_notes": 1,
+            "spill_handles": 1,
+            "plugin_guidance_marker": false,
+            "reply_kind": "tool_calls"
+          },
+          {
+            "body_bytes": 14334,
+            "rough_tokens": 3445,
+            "n_tools": 4,
+            "tool_names": [
+              "terminal",
+              "tool_search",
+              "tool_describe",
+              "tool_call"
+            ],
+            "n_messages": 8,
+            "tool_result_chars": 2740,
+            "truncation_notes": 1,
+            "spill_handles": 1,
+            "plugin_guidance_marker": false,
+            "reply_kind": "final"
+          }
+        ],
+        "provider_script_log": [
+          {
+            "event": "tool_call",
+            "tool": "terminal",
+            "command": "curl -sS http://127.0.0.1:44189/fixture.json"
+          },
+          {
+            "event": "saw_tool_result",
+            "truncated": true,
+            "spill_path": "/tmp/cm-bench-20261027T102217-8cb7c2-2du89mde/home-baseline/cache/spillover/call_bench_22.txt",
+            "result_chars": 2179,
+            "blocked_markers": false
+          },
+          {
+            "event": "tool_search",
+            "note": "ctx tools deferred; discovering via native bridge"
+          },
+          {
+            "event": "tool_search_found_nothing",
+            "search_result_head": "<persisted-output>\nThis tool result was too large (57,237 characters, 55.9 KB).\nFull output saved to: /tmp/cm-bench-20261027T102217-8cb7c2-2du89mde/home-baseline/cache/spillover/call_bench_22.txt\nUse the read_file tool with offset and limit to access specific sections of this output.\nRecovery: page "
+          },
+          {
+            "event": "final",
+            "count": 4546,
+            "sum": 2279940,
+            "source": "tool_result"
+          }
+        ],
+        "probe_untrusted_context": false,
+        "correct": true,
+        "expected": {
+          "count": 4546,
+          "sum": 2279940,
+          "bytes": 266674
+        }
+      },
+      "plugin": {
+        "arm": "plugin",
+        "workload": "large",
+        "run_key": "20261027T102217-8cb7c2.plugin.large",
+        "session_id": "cm-bench-20261027T102217-8cb7c2-plugin-large",
+        "child_ok": true,
+        "child_error": null,
+        "child_traceback": null,
+        "completed": true,
+        "wall_s": 3.957,
+        "child_wall_s": 8.789,
+        "final_text": "COUNT=4546 SUM=2279940",
+        "tool_calls": [
+          {
+            "name": "terminal",
+            "arguments_head": "{\"command\": \"curl -sS http://127.0.0.1:44189/fixture.json\"}"
+          },
+          {
+            "name": "tool_search",
+            "arguments_head": "{\"queries\": [\"context execute python code file json aggregate\"], \"limit\": 8}"
+          },
+          {
+            "name": "tool_describe",
+            "arguments_head": "{\"names\": [\"mcp__context_mode__ctx_execute\"]}"
+          },
+          {
+            "name": "tool_call",
+            "arguments_head": "{\"calls\": [{\"name\": \"mcp__context_mode__ctx_execute\", \"arguments\": {\"language\": \"python\", \"code\": \"import urllib.request, json\\nraw = urllib.request.urlopen('http://127.0.0.1:44189/fixture.json', timeout=30).read().decode()\\ndef parse(text):\\n    return json.JSONDecoder(strict=False).raw_decode(text.strip())[0]\\ndata = parse(raw)\\nif isinstance(data, dict) and 'records' not in data:\\n    try:\\n   "
+          }
+        ],
+        "n_agent_tools": 4,
+        "ctx_tools_advertised": [],
+        "effective_context_length": 0,
+        "mcp_discovery": "ok",
+        "cleanup_errors": null,
+        "strays_killed": [],
+        "requests_scripted": 5,
+        "requests_auxiliary": 0,
+        "auxiliary_body_bytes": 0,
+        "total_body_bytes": 76699,
+        "total_rough_tokens": 18084,
+        "per_request": [
+          {
+            "body_bytes": 11270,
+            "rough_tokens": 2470,
+            "n_tools": 4,
+            "tool_names": [
+              "terminal",
+              "tool_search",
+              "tool_describe",
+              "tool_call"
+            ],
+            "n_messages": 2,
+            "tool_result_chars": 0,
+            "truncation_notes": 0,
+            "spill_handles": 0,
+            "plugin_guidance_marker": true,
+            "reply_kind": "tool_calls"
+          },
+          {
+            "body_bytes": 12036,
+            "rough_tokens": 2898,
+            "n_tools": 4,
+            "tool_names": [
+              "terminal",
+              "tool_search",
+              "tool_describe",
+              "tool_call"
+            ],
+            "n_messages": 4,
+            "tool_result_chars": 502,
+            "truncation_notes": 0,
+            "spill_handles": 0,
+            "plugin_guidance_marker": true,
+            "reply_kind": "tool_calls"
+          },
+          {
+            "body_bytes": 13224,
+            "rough_tokens": 3188,
+            "n_tools": 4,
+            "tool_names": [
+              "terminal",
+              "tool_search",
+              "tool_describe",
+              "tool_call"
+            ],
+            "n_messages": 6,
+            "tool_result_chars": 1366,
+            "truncation_notes": 0,
+            "spill_handles": 0,
+            "plugin_guidance_marker": true,
+            "reply_kind": "tool_calls"
+          },
+          {
+            "body_bytes": 19122,
+            "rough_tokens": 4403,
+            "n_tools": 4,
+            "tool_names": [
+              "terminal",
+              "tool_search",
+              "tool_describe",
+              "tool_call"
+            ],
+            "n_messages": 8,
+            "tool_result_chars": 6765,
+            "truncation_notes": 0,
+            "spill_handles": 0,
+            "plugin_guidance_marker": true,
+            "reply_kind": "tool_calls"
+          },
+          {
+            "body_bytes": 21047,
+            "rough_tokens": 5125,
+            "n_tools": 4,
+            "tool_names": [
+              "terminal",
+              "tool_search",
+              "tool_describe",
+              "tool_call"
+            ],
+            "n_messages": 10,
+            "tool_result_chars": 7756,
+            "truncation_notes": 0,
+            "spill_handles": 1,
+            "plugin_guidance_marker": true,
+            "reply_kind": "final"
+          }
+        ],
+        "provider_script_log": [
+          {
+            "event": "tool_call",
+            "tool": "terminal",
+            "command": "curl -sS http://127.0.0.1:44189/fixture.json"
+          },
+          {
+            "event": "saw_tool_result",
+            "truncated": false,
+            "spill_path": null,
+            "result_chars": 502,
+            "blocked_markers": true
+          },
+          {
+            "event": "tool_search",
+            "note": "ctx tools deferred; discovering via native bridge"
+          },
+          {
+            "event": "tool_describe",
+            "tool": "mcp__context_mode__ctx_execute",
+            "via": "native bridge"
+          },
+          {
+            "event": "bridge_tool_call",
+            "tool": "mcp__context_mode__ctx_execute",
+            "via": "tool_call bridge",
+            "untrusted_context": false
+          },
+          {
+            "event": "final",
+            "count": 4546,
+            "sum": 2279940,
+            "source": "tool_result"
+          }
+        ],
+        "probe_untrusted_context": false,
+        "correct": true,
+        "expected": {
+          "count": 4546,
+          "sum": 2279940,
+          "bytes": 266674
+        }
+      },
+      "delta_plugin_minus_baseline": {
+        "total_body_bytes": 26492,
+        "total_rough_tokens": 6082,
+        "requests_scripted": 1,
+        "wall_s": 0.01
+      }
+    }
+  },
+  "cleanup": {
+    "temp_root": "/tmp/cm-bench-20261027T102217-8cb7c2-2du89mde",
+    "kept": true,
+    "strays_killed": [],
+    "signals": []
+  }
+}

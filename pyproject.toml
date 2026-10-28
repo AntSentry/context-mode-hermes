@@ -11,29 +11,35 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "context-mode-hermes"
-version = "1.3.1"
-description = "Context Mode plugin for Hermes Agent — context window protection via sandboxed execution"
+version = "1.4.0.dev0"
+description = "Hermes Agent integration for context-mode execution, indexed retrieval and session continuity"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 authors = [
     { name = "Chris Staley", email = "chris@spacedinosaurs.com" },
 ]
-keywords = ["context-mode", "hermes", "hermes-agent", "llm", "context-window", "sandbox"]
+keywords = ["context-mode", "hermes", "hermes-agent", "llm", "context-window", "mcp"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries",
 ]
 
 [project.entry-points."hermes_agent.plugins"]
 context-mode = "context_mode_hermes"
 
+[project.scripts]
+context-mode-hermes = "context_mode_hermes.install:main"
+context-mode-hermes-verify = "context_mode_hermes.verify:main"
+
 [tool.setuptools.packages.find]
 include = ["context_mode_hermes*"]
+
+[tool.setuptools.package-data]
+context_mode_hermes = ["runtime/*.json"]
