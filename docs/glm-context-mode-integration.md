@@ -1,5 +1,11 @@
 # Hermes / GLM / context-mode on the OptiPlex 5040
 
+> **Retired GLM deployment.** The owner requested deleting GLM and researching
+> a RAM-resident Qwen replacement. GLM's server/gateway were stopped and its
+> model weights deleted; the unfinished lifecycle check was cancelled, not
+> passed. Hermes, context-mode and indexed data are retained in the same profile.
+> The GLM launch instructions below are historical, not the replacement setup.
+
 The selected working profile is `/home/a1234/.local/share/hermes-glm/profile`;
 its workspace is `/home/a1234/.local/share/hermes-glm/workspace`. The normal
 `~/.hermes` profile is separate. Do not substitute the normal profile in these

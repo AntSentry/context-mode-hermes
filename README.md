@@ -19,9 +19,15 @@ What it does **not** do:
 - **The complete context-mode real-model acceptance has not yet passed.** The exact local GLM-5.3-Flash has completed both a native tool baseline and a context-mode search workflow with an independently verified final answer. Working-profile removal/native-use/re-enable, context continuity and paired net benefit remain separate gates; a completed search does not establish a quality, speed or context-cost improvement.
 - **It is not a security sandbox.** See [Security & isolation](#security--isolation).
 
+**Current model transition:** the owner requested GLM removal. Its validation
+was cancelled, the gateway/model server stopped, and the 146.05 GiB weight set
+deleted. Hermes, context-mode and indexed data are retained. A fresh Qwen-family
+comparison precedes any replacement-model download; the GLM guides below are
+historical evidence, not the active launch procedure.
+
 **Local GLM baseline on the 5040:** [artifact, launch, stop and measured runtime evidence](docs/glm-5.3-flash-local-runtime.md). The verified warm-cache tool turn took about 98 minutes; it read about 1.70 TB during the window. Slow disk-backed execution is demonstrated, not practical responsiveness or a context-mode improvement.
 
-**Working-profile integration:** [exact enable, launch, removal and gateway-restart procedures](docs/glm-context-mode-integration.md), with the retained failed-controller record and current real-GLM acceptance status.
+**Historical GLM integration:** [enable/removal/restart procedures and retained evidence](docs/glm-context-mode-integration.md). The GLM lifecycle was cancelled at the owner's request, not recorded as passing.
 
 ## Compatibility
 

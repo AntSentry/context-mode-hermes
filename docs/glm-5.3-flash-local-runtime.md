@@ -1,5 +1,11 @@
 # GLM-5.3-Flash local runtime on the OptiPlex 5040 (ticket #4)
 
+> **Historical runtime evidence, not the active deployment.** The owner
+> requested GLM removal: all five model shards were deleted and the owned
+> server/gateway stopped. Do not use the launch commands below as the current
+> setup; a Qwen replacement is being researched before installation. Prior
+> measurements and artifacts remain valid records of the retired runtime.
+
 Operator/reproduction guide for bringing up the exact GLM-5.3-Flash
 (`unsloth/GLM-5.3-Flash-GGUF` @ `a38483c8cd5df544f53d70fb281afe97369d5ab6`,
 `UD-IQ4_XS`, 5 shards, **156,822,111,200 bytes** total, every shard
